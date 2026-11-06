@@ -36,27 +36,19 @@
 
 ## 安装 / Installation
 
-```powershell
-# 方式一：用 GitHub 仓库地址直接安装（推荐，与你截图里的“添加插件”弹窗一致）
-# Option 1: install straight from the GitHub repo URL (recommended — same as the "Add plugin" dialog in your screenshot)
-dsh plugin --profile desktop add github:RAECYY/dsh-cookie-pruner
-# 等价写法 / Equivalent forms:
-#   dsh plugin --profile desktop add https://github.com/RAECYY/dsh-cookie-pruner.git
-#   dsh plugin --profile desktop add https://github.com/RAECYY/dsh-cookie-pruner
-```
+> ⚠️ **桌面端不能用 CLI 装插件。** `dsh plugin --profile desktop add ...` 会报错 `profile "desktop" is managed exclusively by the Electron application`。桌面端的插件只能通过应用内的「插件」页安装。
+>
+> ⚠️ **The desktop profile cannot be managed from the CLI.** `dsh plugin --profile desktop add ...` is rejected with `profile "desktop" is managed exclusively by the Electron application`. Install desktop plugins only through the in-app Plugins page.
 
-**中文：** 在桌面端「插件」页 → **Install a third-party plugin** 的弹窗里，直接粘贴上面的仓库地址（如 `https://github.com/RAECYY/dsh-cookie-pruner.git`）即可，无需自己克隆、无需构建。仓库是纯 JavaScript（没有 `dependencies`、没有构建步骤），安装器会用 `pnpm` 拉取源码、按 `package.json` 里的 `dsh.bundle` 字段注册成桌面端 bundle。
+**方式一 / Option 1（推荐，联网，GitHub 仓库）：**
+- **中文：** 打开 DSH 桌面端 GUI → 左侧「插件 / Plugins」→ **Install a third-party plugin** → 在弹窗里粘贴仓库地址 `https://github.com/RAECYY/dsh-cookie-pruner.git`（或 `github:RAECYY/dsh-cookie-pruner`）→ 确认安装。仓库是纯 JavaScript（无 `dependencies`、无构建步骤），安装器会按 `package.json` 的 `dsh.bundle` 字段把它注册成桌面 bundle。
+- **English:** Open the DSH desktop GUI → left sidebar **Plugins** → **Install a third-party plugin** → paste the repo URL `https://github.com/RAECYY/dsh-cookie-pruner.git` (or `github:RAECYY/dsh-cookie-pruner`) → confirm. It's pure JavaScript (no dependencies, no build); the installer registers it as a desktop bundle via the `dsh.bundle` field.
 
-**English:** On the desktop "Plugins" page → **Install a third-party plugin** dialog, just paste the repo URL above (e.g. `https://github.com/RAECYY/dsh-cookie-pruner.git`). No manual clone or build — the installer fetches the source via `pnpm` and registers it as a desktop bundle through the `dsh.bundle` field in `package.json`.
+**方式二 / Option 2（无需联网，本地目录）：**
+- **中文：** 同样在「插件」页 → **Install a third-party plugin** → 选择本地目录 `D:\AI\dsh-cookie-pruner`。
+- **English:** Same Plugins page → **Install a third-party plugin** → pick the local directory `D:\AI\dsh-cookie-pruner`.
 
-```powershell
-# 方式二：本地 link（无需联网）/ Option 2: local link (no network needed)
-dsh plugin --profile desktop add link:D:\AI\dsh-cookie-pruner
-```
-
-**中文：** 若 CLI / 弹窗不支持 Git 地址，用桌面端「插件」页 → **Install a third-party plugin** → 选本地目录 `D:\AI\dsh-cookie-pruner`。仍不行则手动在 `C:\Users\ASUS\.dsh\profiles\desktop\cordis.patch.yml` 末尾追加（注意用 `file:///` 而非裸 `C:/`）：
-
-**English:** If the CLI / dialog doesn't accept a Git address, use the desktop "Plugins" page → **Install a third-party plugin** → pick the local directory `D:\AI\dsh-cookie-pruner`. Otherwise manually append to `C:\Users\ASUS\.dsh\profiles\desktop\cordis.patch.yml` (use `file:///` instead of a bare `C:/`):
+**方式三 / Option 3（手动兜底 / manual fallback）：** 若弹窗两种方式都失败，手动在 `C:\Users\ASUS\.dsh\profiles\desktop\cordis.patch.yml` 末尾追加（注意用 `file:///` 而非裸 `C:/`）：
 
 ```yaml
 - insert:
@@ -64,14 +56,14 @@ dsh plugin --profile desktop add link:D:\AI\dsh-cookie-pruner
     name: 'file:///D:/AI/dsh-cookie-pruner/index.js'
 ```
 
-**中文：** 装完请完全退出并重启 DSH 桌面端。 / **English:** After installing, fully quit and restart the DSH desktop app.
+**中文：** 装完请**完全退出并重启** DSH 桌面端（不是关掉这个聊天窗口，是把整个 DSH 应用退出再打开）。 / **English:** After installing, **fully quit and restart** the DSH desktop app (quit the whole app, not just this chat window, then reopen it).
 
 ## 验证 / Verification
 
-1. **中文：** 打开 DSH GUI（你的是 `http://127.0.0.1:53280`）。 / **English:** Open the DSH GUI (yours is `http://127.0.0.1:53280`).
-2. **中文：** 访问 `http://127.0.0.1:53280/dsh-cookie-pruner/` —— 面板显示当前 `dsh-auth-*` 总条数。 / **English:** Visit `http://127.0.0.1:53280/dsh-cookie-pruner/` — the dashboard shows the current `dsh-auth-*` total count.
+1. **中文：** 打开 DSH GUI（端口每次启动可能变化；当前为 `http://127.0.0.1:41008`。在桌面端窗口标题或「设置 → 关于」里能看到真实地址，不要再照抄旧端口 53280）。 / **English:** Open the DSH GUI (the port changes between launches; currently `http://127.0.0.1:41008`. Find the real address in the window title or **Settings → About** — do not reuse the old `53280` port).
+2. **中文：** 访问 `http://127.0.0.1:<你的端口>/dsh-cookie-pruner/` —— 面板显示当前 `dsh-auth-*` 总条数。 / **English:** Visit `http://127.0.0.1:<your-port>/dsh-cookie-pruner/` — the dashboard shows the current `dsh-auth-*` total count.
 3. **中文：** 确认桌面能正常启动（不再 431）。 / **English:** Confirm the desktop boots normally (no more 431).
-4. **中文：** **首装默认 `dryRun: true`（只统计、不删）**，请在面板或设置确认数量读得对后，把 `dryRun` 改为 `false` 再重启。 / **English:** **On first install `dryRun: true` (count only, no deletion)** — after confirming the count is correct on the dashboard, set `dryRun` to `false` and restart.
+4. **中文：** **首装默认 `dryRun: true`（只统计、不删）**，请在面板确认数量读得对后，把 `dryRun` 改为 `false` 再重启。 / **English:** **On first install `dryRun: true` (count only, no deletion)** — after confirming the count is correct on the dashboard, set `dryRun` to `false` and restart.
 5. **中文：** 点「一键清理（保留最近 5 条）」→ 数量应降到 5；把 `pruneThreshold` 调低并重启，确认自动清理生效（保留 10）。 / **English:** Click "One-click clean (keep newest 5)" → count should drop to 5; lower `pruneThreshold` and restart to confirm auto-prune works (keeps 10).
 
 ## 可调参数 / Configurable parameters (edit `DEFAULT_CONFIG` at the top of `index.js`)
