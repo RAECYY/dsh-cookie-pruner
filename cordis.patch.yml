@@ -1,0 +1,14 @@
+# dsh-cookie-pruner bundle patch
+# Applied when a profile lists this bundle. Row ids must be unique.
+#
+# Layer A: cap the desktop auth-cookie lifetime at 7 days so old dsh-auth-*
+# rows expire well before they can overflow the 16 KiB Cookie header (HTTP 431).
+- id: connection
+  config:
+    cookieMaxAgeDays: 7
+
+# Register the Host half (index.js). The Loader resolves the package by name
+# and calls its exported `apply`.
+- insert:
+  - id: dsh-cookie-pruner-host
+    name: dsh-cookie-pruner
