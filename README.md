@@ -1,6 +1,6 @@
-# dsh-cookie-pruner v0.1.0
+# dsh-cookie-pruner v0.1.1
 
-![version](https://img.shields.io/badge/version-v0.1.0-blue) ![license](https://img.shields.io/badge/license-MIT-green) ![platform](https://img.shields.io/badge/platform-DSH%20desktop-orange)
+![version](https://img.shields.io/badge/version-v0.1.1-blue) ![license](https://img.shields.io/badge/license-MIT-green) ![platform](https://img.shields.io/badge/platform-DSH%20desktop-orange)
 
 ---
 
@@ -37,13 +37,26 @@
 ## 安装 / Installation
 
 ```powershell
-# 方式一：本地 link（推荐，无需联网）/ Option 1: local link (recommended, no network needed)
+# 方式一：用 GitHub 仓库地址直接安装（推荐，与你截图里的“添加插件”弹窗一致）
+# Option 1: install straight from the GitHub repo URL (recommended — same as the "Add plugin" dialog in your screenshot)
+dsh plugin --profile desktop add github:RAECYY/dsh-cookie-pruner
+# 等价写法 / Equivalent forms:
+#   dsh plugin --profile desktop add https://github.com/RAECYY/dsh-cookie-pruner.git
+#   dsh plugin --profile desktop add https://github.com/RAECYY/dsh-cookie-pruner
+```
+
+**中文：** 在桌面端「插件」页 → **Install a third-party plugin** 的弹窗里，直接粘贴上面的仓库地址（如 `https://github.com/RAECYY/dsh-cookie-pruner.git`）即可，无需自己克隆、无需构建。仓库是纯 JavaScript（没有 `dependencies`、没有构建步骤），安装器会用 `pnpm` 拉取源码、按 `package.json` 里的 `dsh.bundle` 字段注册成桌面端 bundle。
+
+**English:** On the desktop "Plugins" page → **Install a third-party plugin** dialog, just paste the repo URL above (e.g. `https://github.com/RAECYY/dsh-cookie-pruner.git`). No manual clone or build — the installer fetches the source via `pnpm` and registers it as a desktop bundle through the `dsh.bundle` field in `package.json`.
+
+```powershell
+# 方式二：本地 link（无需联网）/ Option 2: local link (no network needed)
 dsh plugin --profile desktop add link:D:\AI\dsh-cookie-pruner
 ```
 
-**中文：** 若 CLI 不支持 `link:`，用桌面端「插件」页 → **Install a third-party plugin** → 选本地目录 `D:\AI\dsh-cookie-pruner`。仍不行则手动在 `C:\Users\ASUS\.dsh\profiles\desktop\cordis.patch.yml` 末尾追加（注意用 `file:///` 而非裸 `C:/`）：
+**中文：** 若 CLI / 弹窗不支持 Git 地址，用桌面端「插件」页 → **Install a third-party plugin** → 选本地目录 `D:\AI\dsh-cookie-pruner`。仍不行则手动在 `C:\Users\ASUS\.dsh\profiles\desktop\cordis.patch.yml` 末尾追加（注意用 `file:///` 而非裸 `C:/`）：
 
-**English:** If the CLI doesn't support `link:`, use the desktop "Plugins" page → **Install a third-party plugin** → pick the local directory `D:\AI\dsh-cookie-pruner`. Otherwise manually append to `C:\Users\ASUS\.dsh\profiles\desktop\cordis.patch.yml` (use `file:///` instead of a bare `C:/`):
+**English:** If the CLI / dialog doesn't accept a Git address, use the desktop "Plugins" page → **Install a third-party plugin** → pick the local directory `D:\AI\dsh-cookie-pruner`. Otherwise manually append to `C:\Users\ASUS\.dsh\profiles\desktop\cordis.patch.yml` (use `file:///` instead of a bare `C:/`):
 
 ```yaml
 - insert:
