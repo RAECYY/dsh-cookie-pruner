@@ -1,4 +1,6 @@
-# dsh-cookie-pruner
+# dsh-cookie-pruner v0.1.0
+
+![version](https://img.shields.io/badge/version-v0.1.0-blue) ![license](https://img.shields.io/badge/license-MIT-green) ![platform](https://img.shields.io/badge/platform-DSH%20desktop-orange)
 
 **English:** A DSH (DeepSeek Harness) desktop plugin that works around the known `dsh-auth-*` cookie pile-up bug — the one that causes **HTTP 431 / “Web authentication failed”** and makes the desktop fail to boot after ~70 launches. It caps the auth-cookie lifetime, automatically prunes the oldest `dsh-auth-*` cookies (keeping the newest 10), and ships an in-app dashboard with a one-click clean (keeping the newest 5). Pure JavaScript, no build step, no asar edits.
 
@@ -12,6 +14,18 @@ DSH 桌面端 `dsh-auth-*` cookie 累积导致 **HTTP 431 / “Web authenticatio
 根因：桌面端每次启动用一个随机端口，`dsh-auth-` cookie 名里绑了端口，所以**每次启动都多一条、且从不清理**；约 70 次启动后 Cookie 头超过 Node 16KB 上限，Host 直接回 431，桌面打不开。
 
 > 你的已装版本 `44.7.0`（nightly，2026/11/04 构建）**还未修复**，所以本插件用“绕开官方补丁”的方式解决。
+
+## 仓库文件说明 / What each file does
+
+| 文件 / File | 作用（中文） | Purpose (English) |
+|---|---|---|
+| `index.js` | **插件主体**（Host 半边）：运行时自动清理 + 应用内面板路由 `/dsh-cookie-pruner/`，含全部可调参数（`DEFAULT_CONFIG`） | **Main plugin** (Host half): runtime auto-prune + in-app dashboard route `/dsh-cookie-pruner/`, all tunables in `DEFAULT_CONFIG` |
+| `cordis.patch.yml` | 声明式补丁：限制 `connection.cookieMaxAgeDays: 7`（Layer A 兜底）+ 注册插件本体 | Declarative patch: caps `connection.cookieMaxAgeDays: 7` (Layer A) + registers the plugin entry |
+| `package.json` | 插件元数据（名称/版本/入口/`dsh.bundle.patch` 指向 patch 文件） | Plugin metadata (name/version/entry; `dsh.bundle.patch` points to the patch file) |
+| `cleanup-once.ps1` | **一次性离线清理脚本**：完全退出 DSH 后运行，把 Chromium Cookies 库改名 `.bak`，重启即重建干净库（Layer C） | One-shot offline cleanup: run with DSH fully closed; renames the Chromium Cookies DB so DSH rebuilds a clean one (Layer C) |
+| `README.md` | 本说明文档 | This documentation |
+| `LICENSE` | MIT 开源许可证 | MIT license |
+| `.gitignore` | Git 忽略清单 | Git ignore list |
 
 ## 三重防护
 
