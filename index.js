@@ -13,9 +13,10 @@
  *   B) This Host half, while DSH is live, reads the Electron Chromium cookie
  *      store via `session.defaultSession.cookies` and prunes the oldest
  *      `dsh-auth-*` rows, keeping the newest `keepLatest` (default 10) when the
- *      count exceeds `pruneThreshold` (default 12). It also serves an in-app
- *      dashboard page + JSON API showing the live count and a one-click clean
- *      that keeps the newest `manualKeepLatest` (default 5).
+ *      count exceeds `pruneThreshold` (default 12). It also publishes the live
+ *      count into the DSH Settings page (设置 → 插件) and reacts to a
+ *      `cleanRequest` toggle there, keeping the newest `manualKeepLatest`
+ *      (default 5).
  *   C) For the worst case where the runtime store is unreachable, ship the
  *      offline `cleanup-once.ps1` (run with DSH fully closed) that renames the
  *      Chromium Cookies DB so DSH rebuilds a clean one.
@@ -26,15 +27,20 @@
  * failure can NEVER break DSH startup (the desktop blocks the whole UI on a
  * plugin load error).
  *
- * DEFAULT: `dryRun: true` — only counts, never deletes. Flip to false after you
- * confirm the dashboard shows the right number.
+ * DEFAULT: `dryRun: true` — only counts, never deletes. Flip it from the
+ * Settings form (or in the profile patch) after you confirm the number.
  */
+
+import { createRequire } from 'node:module'
 
 export const name = 'dsh-cookie-pruner'
 
 const COOKIE_PREFIX = 'dsh-auth-'
 
-// Config schema (read via dsh-cookie-pruner Config / cordis; defaults here).
+/** Profile entry id — must match the `insert:` row in cordis.patch.yml. */
+const NS = 'dsh-cookie-pruner-host'
+
+// Config schema (read via the plugin's Config export / cordis; defaults here).
 const DEFAULT_CONFIG = {
   cookieMaxAgeDays: 7,   // mirrors Layer A; mainly informational
   autoPrune: true,
@@ -44,15 +50,69 @@ const DEFAULT_CONFIG = {
   dryRun: true,          // safety: true = count only, no deletes
   checkIntervalMs: 300000, // 5 minutes
   startDelayMs: 30000,     // 30s after load
+  cleanPollMs: 3000,       // how often we look for a Settings clean request
+}
+
+// Loaded defensively: on a `file:///` registration without a reachable
+// node_modules this resolution fails. We must NOT let that break plugin load
+// (it would break DSH startup), so the form is simply omitted and the pruner
+// still runs headless.
+let z = null
+try {
+  z = createRequire(import.meta.url)('@deepseek-ai/schemastery')
+  z = z?.default ?? z
+} catch (e1) {
+  try {
+    const mod = await import('@deepseek-ai/schemastery')
+    z = mod.default ?? mod
+  } catch (e2) {
+    console.warn('[dsh-cookie-pruner] schemastery unavailable — Settings form disabled:', e2?.message || e1?.message)
+  }
+}
+
+/**
+ * Volatile fields are live-editable from the DSH Settings page without
+ * remounting the plugin. dsh-settings auto-renders a form for any plugin whose
+ * Config has at least one `.volatile()` child.
+ */
+export const Config = z
+  ? z.object({
+      lastCount: z.number().description('当前 dsh-auth-* cookie 总条数').default(0).volatile(),
+      available: z.boolean().description('运行时 cookie 存储是否可读').default(false).volatile(),
+      dryRun: z.boolean().description('干跑：只统计，不删除').default(true).volatile(),
+      cleanRequest: z.boolean().description('置为 true 触发一次清理（保留最近 5 条）').default(false).volatile(),
+      lastResult: z.string().description('上一次清理结果').default('').volatile(),
+    })
+  : undefined
+
+/** Volatile field names — the only config keys dsh-settings accepts at runtime. */
+const VOLATILE_KEYS = ['lastCount', 'available', 'dryRun', 'cleanRequest', 'lastResult']
+
+// A `.volatile()` field parses into a cosmokit volatile cell — a plain OBJECT
+// carrying a `.get()` reader (marked with Symbol.for("cosmokit.volatile.write")).
+// Cordis hands us that parsed value, so every read must unwrap it: otherwise
+// `dryRun: true` inside the cell would look like a truthy object and `cleanRequest
+// === true` would never match.
+const VOLATILE_WRITE = Symbol.for('cosmokit.volatile.write')
+function readValue(value) {
+  if (value !== null && typeof value === 'object' &&
+      (VOLATILE_WRITE in value || typeof value.get === 'function')) {
+    try { return value.get() } catch { return undefined }
+  }
+  return value
 }
 
 function resolveConfig(raw) {
-  const c = { ...DEFAULT_CONFIG, ...(raw || {}) }
-  c.pruneThreshold = Number(c.pruneThreshold) || DEFAULT_CONFIG.pruneThreshold
-  c.keepLatest = Number(c.keepLatest) || DEFAULT_CONFIG.keepLatest
-  c.manualKeepLatest = Number(c.manualKeepLatest) || DEFAULT_CONFIG.manualKeepLatest
-  c.checkIntervalMs = Number(c.checkIntervalMs) || DEFAULT_CONFIG.checkIntervalMs
-  c.startDelayMs = Number(c.startDelayMs) || DEFAULT_CONFIG.startDelayMs
+  const c = { ...DEFAULT_CONFIG }
+  if (raw && typeof raw === 'object') {
+    for (const [key, value] of Object.entries(raw)) c[key] = readValue(value)
+  }
+  for (const key of ['pruneThreshold', 'keepLatest', 'manualKeepLatest', 'checkIntervalMs', 'startDelayMs', 'cleanPollMs']) {
+    const n = Number(c[key])
+    c[key] = Number.isFinite(n) && n > 0 ? n : DEFAULT_CONFIG[key]
+  }
+  c.autoPrune = c.autoPrune !== false
+  c.dryRun = c.dryRun !== false
   return c
 }
 
@@ -61,14 +121,6 @@ function isAuthCookie(cookie) {
   if (!cookie.name.startsWith(COOKIE_PREFIX)) return false
   const host = (cookie.domain || cookie.host_key || '').replace(/^\./, '')
   return host === '127.0.0.1' || host === 'localhost' || host.startsWith('127.0.0.')
-}
-
-function json(res, obj, status = 200) {
-  const body = JSON.stringify(obj)
-  res.statusCode = status
-  res.setHeader('Content-Type', 'application/json; charset=utf-8')
-  res.setHeader('Cache-Control', 'no-store')
-  res.end(body)
 }
 
 // Returns { available, cookies, error }. `available=false` means we could not
@@ -129,20 +181,133 @@ async function pruneAuthCookies(keep) {
 export function apply(ctx, config) {
   const cfg = resolveConfig(config)
 
-  const runAutoPrune = async () => {
-    if (!cfg.autoPrune) return
+  // Live config: volatile fields are edited in place, so `apply` is never
+  // re-run. Always read the latest values through the fiber. `effectiveConfig`
+  // is the host-side view dsh-settings reads too — resolveConfig unwraps the
+  // volatile cells for us.
+  const live = () => {
+    let raw = null
+    try { raw = ctx.fiber?.effectiveConfig ?? null } catch { /* ignore */ }
+    return resolveConfig({ ...cfg, ...(raw || {}) })
+  }
+
+  const settings = (() => {
+    try { return ctx.get ? ctx.get('settings') : undefined } catch { return undefined }
+  })()
+
+  // dsh-settings persists every write into the profile YAML and then
+  // reconciles the loader (which restarts this plugin). So:
+  //   1. seed the cache from the values already stored in the YAML — otherwise
+  //      each restart would republish and trigger another reconcile, looping;
+  //   2. send only values that actually changed;
+  //   3. allow a single write in flight.
+  const published = Object.create(null)
+  try {
+    const raw = ctx.fiber?.effectiveConfig
+    if (raw && typeof raw === 'object') {
+      for (const key of VOLATILE_KEYS) {
+        if (key in raw) published[key] = readValue(raw[key])
+      }
+    }
+  } catch { /* ignore */ }
+
+  let writing = null
+  const push = async (patch) => {
+    if (!settings || typeof settings.update !== 'function') return
+    const delta = {}
+    for (const [key, value] of Object.entries(patch)) {
+      if (published[key] !== value) delta[key] = value
+    }
+    if (Object.keys(delta).length === 0) return
+    if (writing) { try { await writing } catch { /* ignore */ } return push(patch) }
+    writing = (async () => {
+      try {
+        await settings.update(NS, delta)
+        Object.assign(published, delta)
+      } catch (e) {
+        console.warn('[dsh-cookie-pruner] settings update skipped:', e.message)
+      } finally {
+        writing = null
+      }
+    })()
+    await writing
+  }
+
+  let busy = false
+
+  const publishCount = async () => {
     try {
-      const { available } = await readAuthCookies()
+      const { available, cookies } = await readAuthCookies()
+      await push({ lastCount: cookies.length, available })
+    } catch (e) {
+      console.warn('[dsh-cookie-pruner] count publish error:', e.message)
+    }
+  }
+
+  const runAutoPrune = async () => {
+    const c = live()
+    if (!c.autoPrune) return
+    try {
+      const { available, cookies } = await readAuthCookies()
       if (!available) return
-      if (cfg.dryRun) return // safety: do not delete while dry-run
-      const state = await pruneAuthCookies(cfg.keepLatest)
+      await push({ lastCount: cookies.length, available: true })
+      if (c.dryRun) return // safety: do not delete while dry-run
+      if (cookies.length <= c.pruneThreshold) return
+      const state = await pruneAuthCookies(c.keepLatest)
       if (state.removed > 0) {
         console.log(`[dsh-cookie-pruner] auto-pruned ${state.removed} old dsh-auth-* cookies (kept ${state.kept})`)
+        await push({ lastCount: state.kept, lastResult: `自动清理：删除 ${state.removed} 条，保留 ${state.kept} 条` })
       }
     } catch (e) {
       console.warn('[dsh-cookie-pruner] auto-prune error:', e.message)
     }
   }
+
+  // Watch the Settings `cleanRequest` toggle. Reset it first so a slow prune
+  // can never re-trigger itself.
+  const checkCleanRequest = async () => {
+    if (busy) return
+    let flag = false
+    try { flag = readValue(ctx.fiber?.effectiveConfig?.cleanRequest) === true } catch { /* ignore */ }
+    if (!flag) return
+    busy = true
+    try {
+      await push({ cleanRequest: false })
+      const c = live()
+      const { available, cookies, error } = await readAuthCookies()
+      if (!available) {
+        await push({ available: false, lastResult: '运行时存储不可用：' + (error || 'unknown') })
+        return
+      }
+      if (c.dryRun) {
+        await push({ lastCount: cookies.length, available: true, lastResult: `干跑开启，未删除（当前 ${cookies.length} 条）` })
+        return
+      }
+      if (cookies.length <= c.manualKeepLatest) {
+        await push({ lastCount: cookies.length, lastResult: `只有 ${cookies.length} 条，无需清理` })
+        return
+      }
+      const state = await pruneAuthCookies(c.manualKeepLatest)
+      await push({
+        lastCount: state.kept,
+        available: true,
+        lastResult: `已删除 ${state.removed} 条，保留 ${state.kept} 条`,
+      })
+    } catch (e) {
+      await push({ lastResult: '清理失败：' + e.message })
+    } finally {
+      busy = false
+    }
+  }
+
+  // Publish the current count right away so the Settings page is never blank.
+  ctx.effect(() => {
+    let cancelled = false
+    const run = async () => { if (!cancelled) await publishCount() }
+    const t = setTimeout(run, 1000)
+    if (typeof t.unref === 'function') t.unref()
+    return () => { cancelled = true; clearTimeout(t) }
+  })
 
   // Schedule periodic check (start after a delay so we don't race welcome auth).
   // Wrap in ctx.effect so cordis disposes the timer on plugin shutdown — this is
@@ -162,93 +327,10 @@ export function apply(ctx, config) {
     }
   })
 
-  // In-app dashboard + JSON API, served on the same host/port as the DSH GUI.
-  const html = (state) => `<!doctype html><html lang="zh"><head><meta charset="utf-8">
-<title>DSH Cookie Pruner</title>
-<style>
-  body { font:14px/1.6 system-ui,Segoe UI,Arial; background:#0f1115; color:#e6e6e6; margin:0; padding:32px; }
-  .card { max-width:560px; margin:0 auto; background:#171a21; border:1px solid #2a2f3a; border-radius:12px; padding:24px; }
-  h1 { font-size:18px; margin:0 0 4px; }
-  .sub { color:#8b93a1; margin:0 0 18px; font-size:12px; }
-  .count { font-size:40px; font-weight:700; margin:8px 0; }
-  .ok { color:#4ade80; } .warn { color:#fbbf24; } .err { color:#f87171; }
-  button { background:#2563eb; color:#fff; border:0; border-radius:8px; padding:10px 16px; font-size:14px; cursor:pointer; }
-  button:disabled { opacity:.5; cursor:not-allowed; }
-  .row { display:flex; gap:12px; align-items:center; margin-top:14px; }
-  .note { margin-top:16px; font-size:12px; color:#8b93a1; }
-  code { background:#222; padding:1px 6px; border-radius:4px; }
-  .status { margin-left:auto; font-size:12px; }
-</style></head>
-<body><div class="card">
-  <h1>DSH Cookie Pruner</h1>
-  <p class="sub">dsh-auth-* 累积清理 · 防 HTTP 431 启动崩溃</p>
-  <div class="count ${state.cls}">${state.count}</div>
-  <div>当前 dsh-auth-* cookie 总条数</div>
-  <div class="row">
-    <button id="clean" ${state.available ? '' : 'disabled'}>一键清理（保留最近 ${state.manualKeepLatest} 条）</button>
-    <span class="status" id="status"></span>
-  </div>
-  <div class="note">
-    阈值：${state.pruneThreshold} ｜ 自动保留：${state.keepLatest} ｜ 手动保留：${state.manualKeepLatest} ｜ 干跑：${state.dryRun ? '是（只统计）' : '否'}<br>
-    ${state.available
-      ? '运行时清理可用。若不可用，请完全退出 DSH 后运行 <code>cleanup-once.ps1</code>。'
-      : '运行时清理不可用（' + state.error + '）。请完全退出 DSH 后运行 <code>cleanup-once.ps1</code>。'}
-  </div>
-</div>
-<script>
-  const clean = document.getElementById('clean');
-  const status = document.getElementById('status');
-  clean && clean.addEventListener('click', async () => {
-    clean.disabled = true; status.textContent = '清理中…';
-    try {
-      const r = await fetch('/dsh-cookie-pruner/prune', { method: 'POST' });
-      const j = await r.json();
-      status.textContent = j.ok ? ('已删除 ' + j.removed + ' 条，保留 ' + j.kept) : ('失败：' + (j.error || 'unknown'));
-      setTimeout(() => location.reload(), 600);
-    } catch (e) { status.textContent = '请求失败：' + e.message; clean.disabled = false; }
-  });
-</script></body></html>`
-
-  const handle = async (req, res) => {
-    const url = (req.url || '').split('?')[0]
-    try {
-      if (url === '/dsh-cookie-pruner/count') {
-        const { available, cookies, error } = await readAuthCookies()
-        const count = cookies.length
-        const cls = !available ? 'err' : (count > cfg.pruneThreshold ? 'warn' : 'ok')
-        return json(res, { count, available, error, pruneThreshold: cfg.pruneThreshold, keepLatest: cfg.keepLatest, manualKeepLatest: cfg.manualKeepLatest, dryRun: cfg.dryRun, cls })
-      }
-      if (url === '/dsh-cookie-pruner/prune' && req.method === 'POST') {
-        if (cfg.dryRun) return json(res, { ok: false, error: 'dryRun 开启，未删除任何 cookie' }, 400)
-        const state = await pruneAuthCookies(cfg.manualKeepLatest)
-        if (!state.available) return json(res, { ok: false, error: state.error || 'store unavailable' }, 503)
-        return json(res, { ok: true, removed: state.removed, kept: state.kept })
-      }
-      if (url === '/dsh-cookie-pruner/' || url === '/dsh-cookie-pruner') {
-        const { available, cookies, error } = await readAuthCookies()
-        const count = cookies.length
-        const cls = !available ? 'err' : (count > cfg.pruneThreshold ? 'warn' : 'ok')
-        res.statusCode = 200
-        res.setHeader('Content-Type', 'text/html; charset=utf-8')
-        return res.end(html({ count, available, error, cls, pruneThreshold: cfg.pruneThreshold, keepLatest: cfg.keepLatest, manualKeepLatest: cfg.manualKeepLatest, dryRun: cfg.dryRun }))
-      }
-      return json(res, { ok: false, error: 'not found' }, 404)
-    } catch (e) {
-      return json(res, { ok: false, error: e.message }, 500)
-    }
-  }
-
-  // webServer is optional: some profiles/hosts may not serve the browser. Guard
-  // with ctx.get('webServer') and degrade gracefully if it is absent.
-  const webServer = ctx.get('webServer')
-  if (webServer && typeof webServer.register === 'function') {
-    try {
-      webServer.register({ kind: 'prefix', path: '/dsh-cookie-pruner', handler: handle })
-      console.log('[dsh-cookie-pruner] dashboard mounted at /dsh-cookie-pruner/')
-    } catch (e) {
-      console.warn('[dsh-cookie-pruner] webServer route registration failed (dashboard disabled):', e.message)
-    }
-  } else {
-    console.warn('[dsh-cookie-pruner] webServer service unavailable — dashboard disabled, auto-prune still active')
-  }
+  // Poll for a Settings-issued clean request.
+  ctx.effect(() => {
+    const watch = setInterval(checkCleanRequest, cfg.cleanPollMs)
+    if (typeof watch.unref === 'function') watch.unref()
+    return () => clearInterval(watch)
+  })
 }

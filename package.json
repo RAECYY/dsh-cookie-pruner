@@ -1,9 +1,9 @@
 {
   "name": "dsh-cookie-pruner",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "type": "module",
   "main": "index.js",
-  "description": "DSH 桌面端 dsh-auth-* cookie 累积（HTTP 431 / Web authentication failed 启动崩溃）缓解插件。限制 cookie 生命周期、自动清理最旧的认证 cookie，并提供应用内面板一键清理（保留最近 5 条）。 / Mitigates the DSH desktop dsh-auth-* cookie pile-up (HTTP 431 / Web authentication failed) bug: caps cookie lifetime, auto-prunes oldest auth cookies, and serves an in-app dashboard with a one-click clean (keep newest 5).",
+  "description": "DSH 桌面端 dsh-auth-* cookie 累积（HTTP 431 / Web authentication failed 启动崩溃）缓解插件。限制 cookie 生命周期、自动清理最旧的认证 cookie，并在 DSH 设置 → 插件中显示当前条数、支持一键清理（保留最近 5 条）。 / Mitigates the DSH desktop dsh-auth-* cookie pile-up (HTTP 431 / Web authentication failed) bug: caps cookie lifetime, auto-prunes oldest auth cookies, and surfaces the live count plus a one-click clean (keep newest 5) inside the DSH Settings page.",
   "keywords": [
     "dsh",
     "deepseek-harness",
@@ -22,6 +22,9 @@
     "README.md",
     "LICENSE"
   ],
+  "dependencies": {
+    "@deepseek-ai/schemastery": "^3.19.0"
+  },
   "dsh": {
     "bundle": {
       "platforms": [
