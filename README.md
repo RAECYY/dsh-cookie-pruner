@@ -1,6 +1,6 @@
-# dsh-cookie-pruner v0.1.2
+# dsh-cookie-pruner v0.1.3
 
-![version](https://img.shields.io/badge/version-v0.1.2-blue) ![license](https://img.shields.io/badge/license-MIT-green) ![platform](https://img.shields.io/badge/platform-DSH%20desktop-orange)
+![version](https://img.shields.io/badge/version-v0.1.3-blue) ![license](https://img.shields.io/badge/license-MIT-green) ![platform](https://img.shields.io/badge/platform-DSH%20desktop-orange)
 
 ---
 
