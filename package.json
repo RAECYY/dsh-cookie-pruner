@@ -1,9 +1,14 @@
 {
   "name": "dsh-cookie-pruner",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "type": "module",
   "main": "index.js",
-  "description": "DSH 桌面端 dsh-auth-* cookie 累积（HTTP 431 / Web authentication failed 启动崩溃）缓解插件。限制 cookie 生命周期、自动清理最旧的认证 cookie，并在 DSH 左侧「插件 / Plugins」侧边栏里显示当前条数、支持一键清理（保留最近 5 条）。 / Mitigates the DSH desktop dsh-auth-* cookie pile-up (HTTP 431 / Web authentication failed) bug: caps cookie lifetime, auto-prunes oldest auth cookies, and surfaces the live count plus a one-click clean (keep newest 5) in the left Plugins sidebar.",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./package.json": "./package.json"
+  },
+  "description": "DSH 桌面端 dsh-auth-* cookie 累积（HTTP 431 / Web authentication failed 启动崩溃）缓解插件。限制 cookie 生命周期、自动清理最旧的认证 cookie，并在左下角「账户 → 设置」里新增一个「Cookie 清理」分区，显示当前条数并支持一键清理（保留最近 5 条）。 / Mitigates the DSH desktop dsh-auth-* cookie pile-up (HTTP 431 / Web authentication failed) bug: caps cookie lifetime, auto-prunes oldest auth cookies, and adds a \"Cookie 清理\" section in the bottom-left account → Settings dialog showing the live count with a real one-click clean button (keep newest 5).",
   "keywords": [
     "dsh",
     "deepseek-harness",
@@ -17,6 +22,7 @@
   "license": "MIT",
   "files": [
     "index.js",
+    "client.js",
     "cordis.patch.yml",
     "cleanup-once.ps1",
     "README.md",
@@ -31,6 +37,14 @@
         "win32"
       ],
       "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-settings",
+        "@deepseek-ai/dsh-client-ui-settings-general"
+      ]
     }
   }
 }

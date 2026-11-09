@@ -14,9 +14,9 @@
  *      store via `session.defaultSession.cookies` and prunes the oldest
  *      `dsh-auth-*` rows, keeping the newest `keepLatest` (default 10) when the
  *      count exceeds `pruneThreshold` (default 12). It also publishes the live
- *      count into the DSH Settings page (设置 → 插件) and reacts to a
- *      `cleanRequest` toggle there, keeping the newest `manualKeepLatest`
- *      (default 5).
+ *      count into the "Cookie 清理" Settings section contributed by client.js
+ *      (bottom-left account → 设置), and reacts to the `cleanRequest` button
+ *      there, keeping the newest `manualKeepLatest` (default 5).
  *   C) For the worst case where the runtime store is unreachable, ship the
  *      offline `cleanup-once.ps1` (run with DSH fully closed) that renames the
  *      Chromium Cookies DB so DSH rebuilds a clean one.
