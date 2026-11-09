@@ -51,6 +51,8 @@ const DEFAULT_CONFIG = {
   checkIntervalMs: 300000, // 5 minutes
   startDelayMs: 30000,     // 30s after load
   cleanPollMs: 3000,       // how often we look for a Settings clean request
+  countPollMs: 15000,      // re-publish the live count so a transient early
+                          // read failure self-heals and the number stays fresh
 }
 
 // Loaded defensively: on a `file:///` registration without a reachable
@@ -107,7 +109,7 @@ function resolveConfig(raw) {
   if (raw && typeof raw === 'object') {
     for (const [key, value] of Object.entries(raw)) c[key] = readValue(value)
   }
-  for (const key of ['pruneThreshold', 'keepLatest', 'manualKeepLatest', 'checkIntervalMs', 'startDelayMs', 'cleanPollMs']) {
+  for (const key of ['pruneThreshold', 'keepLatest', 'manualKeepLatest', 'checkIntervalMs', 'startDelayMs', 'cleanPollMs', 'countPollMs']) {
     const n = Number(c[key])
     c[key] = Number.isFinite(n) && n > 0 ? n : DEFAULT_CONFIG[key]
   }
@@ -136,8 +138,17 @@ async function readAuthCookies() {
   if (!session || !session.defaultSession || !session.defaultSession.cookies) {
     return { available: false, cookies: [], error: 'session.defaultSession.cookies missing' }
   }
+  const cookiesApi = session.defaultSession.cookies
+  // On a freshly-started desktop the cookie store may not be loaded yet. The
+  // Electron `Cookies` object exposes a `ready` promise (resolved once the
+  // store is read off disk). Awaiting it — with a short timeout so a missing
+  // promise can't hang us — avoids the all-too-common "0 cookies on first
+  // read" that otherwise freezes in the Settings UI.
+  if (cookiesApi.ready && typeof cookiesApi.ready.then === 'function') {
+    try { await Promise.race([cookiesApi.ready, new Promise((_, rej) => setTimeout(() => rej(new Error('ready timeout')), 5000))]) } catch { /* fall through and try get() anyway */ }
+  }
   try {
-    const all = await session.defaultSession.cookies.get({})
+    const all = await cookiesApi.get({})
     const auth = all.filter(isAuthCookie)
     // Newest first. Electron cookies reliably carry `expirationDate`; under the
     // fixed cookieMaxAgeDays the one set most recently has the largest value,
@@ -150,6 +161,21 @@ async function readAuthCookies() {
   } catch (e) {
     return { available: false, cookies: [], error: 'cookies.get failed: ' + e.message }
   }
+}
+
+// First read on a fresh launch is fragile: the store can be momentarily empty
+// or `get({})` can throw. Retry a few times with a short gap so a transient
+// miss self-heals instead of pinning the UI at 0.
+async function readAuthCookiesWithRetry(attempts = 5) {
+  let last = { available: false, cookies: [], error: 'no attempt' }
+  for (let i = 0; i < attempts; i++) {
+    last = await readAuthCookies()
+    if (last.available && last.cookies.length > 0) return last
+    // Even an `available` but empty store is suspicious this early; retry,
+    // but only up to `attempts` times so we don't spin forever.
+    if (i < attempts - 1) await new Promise((r) => setTimeout(r, 1000))
+  }
+  return last
 }
 
 // Remove all but the newest `keep` cookies among the auth set.
@@ -237,8 +263,8 @@ export function apply(ctx, config) {
 
   const publishCount = async () => {
     try {
-      const { available, cookies } = await readAuthCookies()
-      await push({ lastCount: cookies.length, available })
+      const { available, cookies, error } = await readAuthCookiesWithRetry()
+      await push({ lastCount: cookies.length, available, lastResult: available ? '' : ('读取失败：' + (error || 'unknown')) })
     } catch (e) {
       console.warn('[dsh-cookie-pruner] count publish error:', e.message)
     }
@@ -248,8 +274,11 @@ export function apply(ctx, config) {
     const c = live()
     if (!c.autoPrune) return
     try {
-      const { available, cookies } = await readAuthCookies()
-      if (!available) return
+      const { available, cookies, error } = await readAuthCookiesWithRetry()
+      if (!available) {
+        await push({ available: false, lastResult: '读取失败：' + (error || 'unknown') })
+        return
+      }
       await push({ lastCount: cookies.length, available: true })
       if (c.dryRun) return // safety: do not delete while dry-run
       if (cookies.length <= c.pruneThreshold) return
@@ -274,7 +303,7 @@ export function apply(ctx, config) {
     try {
       await push({ cleanRequest: false })
       const c = live()
-      const { available, cookies, error } = await readAuthCookies()
+      const { available, cookies, error } = await readAuthCookiesWithRetry()
       if (!available) {
         await push({ available: false, lastResult: '运行时存储不可用：' + (error || 'unknown') })
         return
@@ -300,13 +329,17 @@ export function apply(ctx, config) {
     }
   }
 
-  // Publish the current count right away so the Settings page is never blank.
+  // Publish the live count. The first read retries internally (the store can
+  // be empty right after launch), then we keep re-publishing on an interval so
+  // a transient early miss self-heals and the number stays fresh.
   ctx.effect(() => {
     let cancelled = false
     const run = async () => { if (!cancelled) await publishCount() }
     const t = setTimeout(run, 1000)
     if (typeof t.unref === 'function') t.unref()
-    return () => { cancelled = true; clearTimeout(t) }
+    const interval = setInterval(run, cfg.countPollMs)
+    if (typeof interval.unref === 'function') interval.unref()
+    return () => { cancelled = true; clearTimeout(t); clearInterval(interval) }
   })
 
   // Schedule periodic check (start after a delay so we don't race welcome auth).

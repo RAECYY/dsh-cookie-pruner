@@ -1,6 +1,6 @@
-# dsh-cookie-pruner v0.1.4
+# dsh-cookie-pruner v0.1.5
 
-![version](https://img.shields.io/badge/version-v0.1.4-blue) ![license](https://img.shields.io/badge/license-MIT-green) ![platform](https://img.shields.io/badge/platform-DSH%20desktop-orange)
+![version](https://img.shields.io/badge/version-v0.1.5-blue) ![license](https://img.shields.io/badge/license-MIT-green) ![platform](https://img.shields.io/badge/platform-DSH%20desktop-orange)
 
 ---
 
@@ -72,6 +72,10 @@
 1. **中文：** 装完重启后，点 **左下角账户头像 → 设置（Ctrl+,）**，在左侧导航里找到「**Cookie 清理**」（排在「通用设置」和「模型」之间）。 / **English:** After restarting, click **bottom-left account avatar → Settings (Ctrl+,)** and find "**Cookie 清理**" in the left nav (between 通用设置 and 模型).
 2. **中文：** 面板会显示：`当前认证 Cookie 条数`、`运行时存储`（可用/不可用）、`模式`（干跑 / 生效）、`上次清理结果`，以及一个「**一键清理（保留最近 5 条）**」按钮。 / **English:** The panel shows the live count, runtime-store status, mode (dry-run / active), last result, and a "**一键清理（保留最近 5 条）**" button.
 3. **中文：** **首装默认 `dryRun: true`（只统计、不删）**。先确认条数合理、`运行时存储 = 可用`，再把 `index.js` 里 `DEFAULT_CONFIG.dryRun` 改为 `false` 并重启 DSH。 / **English:** **On first install `dryRun: true` (count only, no deletion).** Confirm the count looks right and `运行时存储 = 可用`, then set `DEFAULT_CONFIG.dryRun` to `false` in `index.js` and restart DSH.
+
+> **中文（v0.1.5 修复「显示零个」）：** 之前启动后「Cookie 清理」分区会显示 **当前条数 = 0 / 运行时存储 = 不可用**。这不是真正的空库，而是刚启动时 Electron cookie 库尚未就绪，首次读取返回空或抛错，而当时没有重试、也没有周期刷新，于是这个失败值被冻结了。v0.1.5 做了三处修复：① 读取前先 `await session.defaultSession.cookies.ready`（带 5 秒超时兜底）；② `readAuthCookiesWithRetry()` 连续重试 5 次、每次间隔 1 秒；③ 新增每 15 秒的 `countPollMs` 周期发布，让任何早期的瞬时失败都能自愈，条数也会持续保持最新。若仍显示「不可用」，面板会直接在「上次结果」里给出读取出错原因（例如 `electron not importable` 或 `cookies.get failed: ...`），便于排查。
+>
+> **English (v0.1.5 fixes the "shows zero" issue):** Earlier, right after launch the "Cookie 清理" section showed **count = 0 / store = unavailable**. That was not an empty store — it was the Electron cookie store not being ready yet on a fresh launch, so the first read returned empty or threw, and because there was no retry and no periodic refresh the failed value got frozen. v0.1.5 fixes this three ways: ① `await session.defaultSession.cookies.ready` (with a 5 s timeout fallback) before reading; ② `readAuthCookiesWithRetry()` retries up to 5 times, 1 s apart; ③ a new `countPollMs` (15 s) periodic publisher so any early transient failure self-heals and the count stays fresh. If it still says "unavailable", the panel now surfaces the read error directly in "lastResult" (e.g. `electron not importable` or `cookies.get failed: ...`) for easy diagnosis.
 4. **中文：** 点「一键清理」→ 几秒内插件会清理到只剩最近 5 条，条数随之下降，结果框显示"已删除 N 条，保留 M 条"。 / **English:** Click the clean button → within seconds the plugin prunes down to the newest 5, the count drops and the result box reports "removed N, kept M".
 5. **中文：** 确认桌面能正常启动（不再 431）。 / **English:** Confirm the desktop boots normally (no more 431).
 
@@ -92,6 +96,7 @@
 | `checkIntervalMs` | 300000 | 自动清理间隔（5 分钟）/ Auto-prune interval (5 min) |
 | `startDelayMs` | 30000 | 启动后延迟首次检查（30 秒）/ Delay before first check after startup (30 s) |
 | `cleanPollMs` | 3000 | 轮询「一键清理」请求的间隔（3 秒）/ Poll interval for the clean request (3 s) |
+| `countPollMs` | 15000 | 重新发布实时条数的间隔（15 秒），让启动早期的读取失败自愈 / Re-publish the live count every 15 s so an early read failure self-heals |
 
 ## 安全说明 / Safety
 
