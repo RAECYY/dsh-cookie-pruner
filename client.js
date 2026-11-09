@@ -1,20 +1,30 @@
 /**
- * dsh-cookie-pruner — browser (client) half, v0.1.4
+ * dsh-cookie-pruner — browser (client) half, v0.1.6
  *
  * Contributes a real "Cookie 清理" section to the DSH Settings dialog — the
  * panel opened from the bottom-left account avatar → 设置. This is the place
  * the user asked for (not the left Plugins sidebar, not a web dashboard).
+ *
+ * HONEST NOTE (v0.1.6): a third-party plugin host half runs inside a
+ * node:vm sandbox whose module linker maps `electron` to the renderer bridge,
+ * so `session.defaultSession.cookies` is unreachable and there is no
+ * `ctx.cookies`/`ctx.session` service. The Chromium Cookies DB is also locked
+ * while DSH runs. Therefore the plugin CANNOT read or delete cookies at
+ * runtime. This panel therefore (1) shows that fact, (2) shows the proof the
+ * host probed, and (3) gives the one-click path to the OFFLINE cleanup script
+ * that actually fixes the 431.
  *
  * Mechanism (verified against the shipped 44.7.0 asar):
  *  - `dsh-client-ui-settings-general` owns the Settings dialog and builds its
  *    nav from the `settings.section` LIST slot; the active section's component
  *    is rendered by `renderSlot("settings.section", {close}, {only: active})`.
  *  - A plugin contributes a nav row + panel by registering a `settings.section`
- *    entry from a CLIENT half. The host (node) half cannot register browser slots.
+ *    entry from a CLIENT half. The host (node) half cannot register slots.
  *  - The live values live in the Host's `dsh-settings` service under namespace
  *    `dsh-cookie-pruner-host` (= the cordis.patch.yml entry id). The client reads
- *    them through `ctx.configForms.get(ns)` (a ConfigFormController) and writes
- *    back through `form.set("cleanRequest", true)`, which the host polls.
+ *    them through `ctx.configForms.get(ns)` and writes back through
+ *    `form.set("cleanRequest", true)`, which the host turns into the offline
+ *    instructions.
  *
  * This file is served VERBATIM as a browser module: the loader calls
  * `factory(require)` and `require('react')` comes from the browser module table.
@@ -41,6 +51,7 @@ window.__ModuleLoader__.load({
       brand: c('--dsw-alias-brand-primary-new-colorprimary-new-color', '#4c8dff'),
       success: c('--dsw-alias-state-success-primary', '#3fbf7f'),
       error: c('--dsw-alias-state-error-primary', '#f0716b'),
+      warning: c('--dsw-alias-state-warning-primary', '#e0a23b'),
       radius: c('--dsw-radius-md', '8px'),
     }
 
@@ -75,32 +86,32 @@ window.__ModuleLoader__.load({
 
       const v = (snap && snap.value) || {}
       const status = snap && snap.status
-      const count = typeof v.lastCount === 'number' ? v.lastCount : 0
+      const count = typeof v.lastCount === 'number' ? v.lastCount : -1
       const available = v.available === true
-      const dryRun = v.dryRun !== false
       const cleanRequest = v.cleanRequest === true
       const lastResult = typeof v.lastResult === 'string' ? v.lastResult : ''
       const writable = !!(snap && snap.writable)
 
-      const clean = () => {
+      const showInstructions = () => {
         if (pending) return
         setPending(true)
-        // The host's `checkCleanRequest` polls cleanRequest, prunes (keep newest
-        // manualKeepLatest=5), then resets the flag to false. It also publishes
-        // lastCount / available / lastResult back into this same form.
+        // The host's `checkCleanRequest` polls cleanRequest and prints the
+        // offline cleanup instructions into lastResult.
         Promise.resolve(form.set('cleanRequest', true)).catch(() => {})
       }
 
       let statusLine
       if (status === 'loading') statusLine = '正在读取插件状态…'
       else if (status === 'unavailable' || status === undefined) statusLine = '插件尚未就绪（请完全退出并重进 DSH 一次）'
-      else if (!available) statusLine = '运行时 Cookie 存储不可访问（需要桌面端 Electron 会话）'
+      else if (!available) statusLine = '运行时 Cookie 存储不可访问（DSH 插件沙箱限制，见下方说明）'
       else statusLine = ''
 
       const disabled = pending || cleanRequest || !writable || status === 'unavailable'
 
+      const countText = count === -1 ? '读不到（-1）' : String(count)
+
       return h('div', {
-        style: { color: T.primary, fontSize: 14, maxWidth: 720, lineHeight: 1.6, padding: '4px 2px' },
+        style: { color: T.primary, fontSize: 14, maxWidth: 760, lineHeight: 1.6, padding: '4px 2px' },
       },
         h('div', { style: { fontSize: 16, fontWeight: 600, marginBottom: 4 } }, 'DSH 认证 Cookie 清理'),
         h('div', { style: { color: T.tertiary, fontSize: 12, marginBottom: 20 } },
@@ -109,17 +120,17 @@ window.__ModuleLoader__.load({
         h('div', { style: { background: T.bg, border: `1px solid ${T.border}`, borderRadius: T.radius, padding: '8px 16px', marginBottom: 18 } },
           h('div', { style: row },
             h('span', { style: label }, '当前认证 Cookie 条数'),
-            h('span', { style: value }, String(count))),
-          h('div', { style: row },
-            h('span', { style: label }, '运行时存储'),
-            available ? Badge('可用', T.success) : Badge('不可用', T.error)),
+            h('span', { style: value }, countText)),
           h('div', { style: { ...row, borderBottom: 'none' } },
-            h('span', { style: label }, '模式'),
-            dryRun ? Badge('干跑（只统计，不删除）', T.secondary) : Badge('生效（可删除）', T.success))),
+            h('span', { style: label }, '运行时存储'),
+            available ? Badge('可用', T.success) : Badge('不可用', T.error))),
+
+        h('div', { style: { color: T.warning, fontSize: 12, marginBottom: 14, lineHeight: 1.5 } },
+          '说明：本插件运行在 DSH 插件沙箱内，无法直接读取或删除 cookie（这是 DSH 桌面端插件架构限制，不是插件 bug）。条数显示「读不到」属正常。要真正清理堆积、解除 431，请使用下面的离线脚本。'),
 
         h('button', {
           type: 'button',
-          onClick: clean,
+          onClick: showInstructions,
           disabled,
           style: {
             appearance: 'none', cursor: disabled ? 'not-allowed' : 'pointer',
@@ -128,25 +139,24 @@ window.__ModuleLoader__.load({
             border: 'none', borderRadius: T.radius,
             opacity: disabled ? 0.65 : 1,
           },
-        }, pending || cleanRequest ? '清理中…' : '一键清理（保留最近 5 条）'),
+        }, pending || cleanRequest ? '生成中…' : '如何彻底清理（离线）'),
 
         h('div', { style: { color: T.secondary, fontSize: 12, marginTop: 10 } },
-          dryRun
-            ? '当前为干跑模式：点击清理只会统计，不会真的删除。确认条数无误后，把 index.js 里 DEFAULT_CONFIG.dryRun 改为 false 并重启 DSH，清理才会真正生效。'
-            : '清理会删除最旧的 dsh-auth-* cookie，仅保留最近 5 条；桌面端每次启动端口随机，旧记录不再被复用，因此需要定期清理。'),
+          '点击后会显示离线清理脚本的路径与步骤（需完全退出 DSH 后运行）。'),
 
         (lastResult || statusLine)
           ? h('div', {
               style: {
                 marginTop: 16, padding: '10px 12px', borderRadius: T.radius,
                 background: T.bg, border: `1px solid ${T.border}`,
-                color: lastResult ? T.primary : T.tertiary, fontSize: 12, whiteSpace: 'pre-wrap',
+                color: T.primary, fontSize: 12, whiteSpace: 'pre-wrap',
+                maxHeight: 320, overflow: 'auto',
               },
             }, lastResult || statusLine)
           : null,
 
         h('div', { style: { color: T.tertiary, fontSize: 11, marginTop: 20 } },
-          'dsh-cookie-pruner v0.1.4 · 自动清理每 5 分钟检查一次（超过阈值 12 条时保留最近 10 条）'),
+          'dsh-cookie-pruner v0.1.6 · Layer A（cookieMaxAgeDays:7）已在生效，防止未来 cookie 堆积。'),
       )
     }
 

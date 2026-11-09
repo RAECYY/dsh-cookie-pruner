@@ -1,39 +1,59 @@
-# dsh-cookie-pruner v0.1.5
+# dsh-cookie-pruner v0.1.6
 
-![version](https://img.shields.io/badge/version-v0.1.5-blue) ![license](https://img.shields.io/badge/license-MIT-green) ![platform](https://img.shields.io/badge/platform-DSH%20desktop-orange)
+![version](https://img.shields.io/badge/version-v0.1.6-blue) ![license](https://img.shields.io/badge/license-MIT-green) ![platform](https://img.shields.io/badge/platform-DSH%20desktop-orange)
 
 ---
 
 ## 简介 / Introduction
 
-**中文：** 一个 DSH（DeepSeek Harness）桌面端插件，用来绕开已知的 `dsh-auth-*` cookie 累积 bug——也就是那个大约启动 70 次后导致 **HTTP 431 / "Web authentication failed"、桌面直接打不开** 的问题。它会限制认证 cookie 生命周期、自动清理最旧的 `dsh-auth-*` cookie（保留最近 10 条），并在 **DSH 左下角账户头像 → 设置（Settings）对话框里新增一个「Cookie 清理」分区**，显示当前条数、运行时状态与一个**真正的「一键清理」按钮**（保留最近 5 条）。纯 JavaScript，无需构建，不改 asar。
+**中文：** 一个 DSH（DeepSeek Harness）桌面端插件，用来缓解已知的 `dsh-auth-*` cookie 累积 bug——也就是那个大约启动 70 次后导致 **HTTP 431 / "Web authentication failed"、桌面直接打不开** 的问题。它在 **DSH 左下角账户头像 → 设置（Settings）对话框里新增一个「Cookie 清理」分区**，但**诚实**地说明一件事：第三方插件运行在 DSH 的插件沙箱（`node:vm`）里，沙箱把 `electron` 映射到渲染进程桥接，**没有 `session.defaultSession.cookies`，也没有 `ctx.cookies`/`ctx.session` 服务**，而 Chromium 的 Cookies 库在 DSH 运行时被独占锁定——所以**插件无法在运行时直接读取或删除这些 cookie**。这个面板因此做的是：**展示这个限制的探测证明**，并给出真正能解除 431 的**离线 `cleanup-once.ps1` 路径与步骤**。真正的防护靠 Layer A（`cookieMaxAgeDays:7`，已生效）和 Layer C（离线清理）。纯 JavaScript，无需构建，不改 asar。
 
-**English:** A DSH (DeepSeek Harness) desktop plugin that works around the known `dsh-auth-*` cookie pile-up bug — the one that causes **HTTP 431 / "Web authentication failed"** and makes the desktop fail to boot after ~70 launches. It caps the auth-cookie lifetime, automatically prunes the oldest `dsh-auth-*` cookies (keeping the newest 10), and adds a **"Cookie 清理" section to the bottom-left account avatar → Settings dialog** showing the live count, runtime status and a **real one-click clean button** (keep newest 5). Pure JavaScript, no build step, no asar edits.
+**English:** A DSH (DeepSeek Harness) desktop plugin that mitigates the known `dsh-auth-*` cookie pile-up bug — the one that causes **HTTP 431 / "Web authentication failed"** and makes the desktop fail to boot after ~70 launches. It adds a **"Cookie 清理" section to the bottom-left account avatar → Settings dialog**, but **honestly** states the limitation: a third-party plugin runs inside DSH's plugin sandbox (`node:vm`), and that sandbox maps `electron` to the renderer bridge, so there is **no `session.defaultSession.cookies`, no `ctx.cookies`/`ctx.session` service**, and the Chromium Cookies DB is exclusively locked while DSH runs — meaning the plugin **cannot read or delete those cookies at runtime**. So this panel **shows the proof of that limitation** and points to the **offline `cleanup-once.ps1`** that actually fixes 431. The real defense is Layer A (`cookieMaxAgeDays:7`, already on) plus Layer C (offline cleanup). Pure JavaScript, no build step, no asar edits.
 
 ## 背景 / Background
 
-**中文：** 对应视频：【十二人夋的作品】"DSH已知bug #DSH #DeepSeek #DeepSeekHarness"。根因：桌面端每次启动用一个随机端口，`dsh-auth-` cookie 名里绑了端口，所以**每次启动都多一条、且从不清理**；约 70 次启动后 Cookie 头超过 Node 16KB 上限，Host 直接回 431，桌面打不开。已测版本 `44.7.0`（nightly，2026/11/04 构建）**仍未修复**，所以本插件用"绕开官方补丁"的方式解决。
+**中文：** 对应视频：【十二人夋的作品】"DSH已知bug #DSH #DeepSeek #DeepSeekHarness"。根因：桌面端每次启动用一个随机端口，`dsh-auth-` cookie 名里绑了端口，所以**每次启动都多一条、且从不清理**；约 70 次启动后 Cookie 头超过 Node 16KB 上限，Host 直接回 431，桌面打不开。已测版本 `44.7.0`（nightly，2026/11/04 构建）**仍未修复**。本插件**不**声称能在运行时清理——那是 DSH 插件架构做不到的；它做的是限制未来寿命 + 指出离线解法。
 
-**English:** Related video: 【十二人夋的作品】"DSH已知bug #DSH #DeepSeek #DeepSeekHarness". Root cause: the desktop host uses a random port on every launch, and the `dsh-auth-` cookie name is bound to that port, so **one new cookie is added each launch and never cleaned up**. After ~70 launches the Cookie header exceeds Node's 16 KiB limit, the host answers HTTP 431, and the desktop won't open. The tested build `44.7.0` (nightly, built 2026/11/04) is **not yet fixed**, so this plugin works around the official patch.
+**English:** Related video: 【十二人夋的作品】"DSH已知bug #DSH #DeepSeek #DeepSeekHarness". Root cause: the desktop host uses a random port on every launch, and the `dsh-auth-` cookie name is bound to that port, so **one new cookie is added each launch and never cleaned up**. After ~70 launches the Cookie header exceeds Node's 16 KiB limit, the host answers HTTP 431, and the desktop won't open. The tested build `44.7.0` (nightly, built 2026/11/04) is **not yet fixed**. This plugin does **not** claim to clean at runtime — that's impossible under the plugin architecture — it caps future lifetime and points to the offline fix.
 
 ## 仓库文件说明 / What each file does
 
 | 文件 / File | 作用（中文） | Purpose (English) |
 |---|---|---|
-| `index.js` | **插件主体（Host 半边）**：运行时自动清理 + 把条数/状态写进 `settings` 服务 + 响应一键清理，含全部可调参数（`DEFAULT_CONFIG`） | **Main plugin (Host half)**: runtime auto-prune + writes count/status into the `settings` service + reacts to the clean button; all tunables in `DEFAULT_CONFIG` |
+| `index.js` | **插件主体（Host 半边）**：探测 cookie 存储是否可达、把诊断/证明写进 `settings` 服务、响应"如何清理"请求 | **Main plugin (Host half)**: probes cookie-store reachability, publishes diagnostics/proof into the `settings` service, reacts to the "how to clean" request |
 | `client.js` | **浏览器（Client）半边**：用 `settings.section` 插槽把「Cookie 清理」分区注册进「账户 → 设置」对话框，读取并回写表单 | **Browser (Client) half**: registers the "Cookie 清理" section into the account → Settings dialog via the `settings.section` slot, reads and writes the form |
 | `cordis.patch.yml` | 声明式补丁：限制 `connection.cookieMaxAgeDays: 7`（Layer A 兜底）+ 注册插件本体 | Declarative patch: caps `connection.cookieMaxAgeDays: 7` (Layer A) + registers the plugin entry |
 | `package.json` | 插件元数据：`exports`（含 `./client`）、`dsh.bundle.platforms/patch`、`dsh.client`、`@deepseek-ai/schemastery` 依赖 | Plugin metadata: `exports` (incl. `./client`), `dsh.bundle.platforms/patch`, `dsh.client`, the `@deepseek-ai/schemastery` dependency |
-| `cleanup-once.ps1` | **一次性离线清理脚本**：完全退出 DSH 后运行，把 Chromium Cookies 库改名 `.bak`，重启即重建干净库（Layer C） | One-shot offline cleanup: run with DSH fully closed; renames the Chromium Cookies DB so DSH rebuilds a clean one (Layer C) |
+| `cleanup-once.ps1` | **一次性离线清理脚本**：完全退出 DSH 后运行，把 Chromium Cookies 库改名 `.bak`，重启即重建干净库（Layer C，真正解除 431） | One-shot offline cleanup: run with DSH fully closed; renames the Chromium Cookies DB so DSH rebuilds a clean one (Layer C — the real 431 fix) |
 | `README.md` | 本说明文档 | This documentation |
 | `LICENSE` | MIT 开源许可证 | MIT license |
 | `.gitignore` | Git 忽略清单 | Git ignore list |
 
+## 为什么"面板 + 一键清理"在 DSH 插件里做不到 / Why a Settings panel can't actually clean
+
+**中文（划重点）：** 我（作者）在 v0.1.4 / v0.1.5 里**错误地承诺了"实时条数 + 一键清理"**。经核对 DSH 44.7.0 的 asar 与插件宿主运行器源码，结论是：
+
+1. 插件 Host 半边在 `node:vm` 沙箱里求值；沙箱的模 linker 把 `import('electron')` 解析到**渲染进程桥接对象**——它有 `ipcRenderer` 之类，但**没有 `.session.defaultSession.cookies`**。这正是用户看到的 `session.defaultSession.cookies missing`。
+2. DSH **没有**向插件暴露任何 `ctx.cookies` / `ctx.session` 服务（已扫描 `super(ctx,"…")` 注册表确认）。
+3. Chromium 的 Cookies SQLite 库在 DSH 运行时被**独占锁定**（`node:sqlite` 只读打开 → `unable to open database file`，`cp` → EBUSY），所以连 SQLite 直读都做不到。
+4. DSH 自己的 cookie 读取在 Electron **主进程**里（`welcomeBackend` 的 `session.defaultSession.cookies.get(...)`），而插件不在那个进程/领域里。
+
+⇒ 结论：**第三方插件在 DSH 运行时既读不到、也删不掉 `dsh-auth-*` cookie。** 这不是本插件 bug，也不是用户操作问题，是 DSH 桌面端插件架构的硬限制。所以 v0.1.6 不再假装能清——改为诚实地展示探测证明 + 给出离线解法。
+
+**English (key point):** In v0.1.4 / v0.1.5 I **wrongly promised a live count + one-click clean**. After checking the DSH 44.7.0 asar and the plugin host-runner source, the conclusion is:
+
+1. The plugin Host half is evaluated inside a `node:vm` sandbox whose module linker resolves `import('electron')` to the **renderer bridge object** — it has `ipcRenderer` etc. but **no `.session.defaultSession.cookies`**. That is exactly the user's `session.defaultSession.cookies missing`.
+2. DSH exposes **no** `ctx.cookies` / `ctx.session` service to plugins (verified by scanning the `super(ctx,"…")` registry).
+3. The Chromium Cookies SQLite DB is **exclusively locked** while DSH runs (`node:sqlite` read-only open → `unable to open database file`, `cp` → EBUSY), so even direct SQLite read is impossible.
+4. DSH's own cookie read lives in the Electron **main process** (`welcomeBackend`'s `session.defaultSession.cookies.get(...)`), which the plugin is not part of.
+
+⇒ Conclusion: **a third-party plugin cannot read or delete `dsh-auth-*` cookies while DSH is running.** This is not a plugin bug and not a user mistake — it's a hard limit of the DSH desktop plugin architecture. So v0.1.6 stops pretending and honestly shows the proof + the offline fix.
+
 ## 三重防护 / Three layers of defense
 
-1. **声明式兜底（必定生效）/ Declarative cap (always on):** 把 `connection.cookieMaxAgeDays` 从默认 30 天压到 **7 天**，旧 cookie 自己会过期，根本堆不到 16KB。 / Caps `connection.cookieMaxAgeDays` from the default 30 days down to **7 days**, so old cookies expire on their own and can never pile up to 16 KiB.
-2. **运行时自动清理 / Runtime auto-prune:** DSH 活着时，插件读取 Electron Chromium cookie 库，检测 `dsh-auth-*` 数量，超过阈值就删最旧的、只留最近 10 条；同时把**当前总条数**推送到「账户 → 设置」里的「Cookie 清理」分区，并提供一键清理按钮（保留最近 5 条）。 / While DSH is live, the plugin reads the Electron Chromium cookie store, counts `dsh-auth-*` cookies, and when over the threshold removes the oldest ones keeping the newest 10; it also pushes the **live count** into the "Cookie 清理" section of account → Settings and offers a one-click clean button (keep newest 5).
-3. **一次性离线清理 / One-shot offline cleanup:** 极端情况（运行时库读不到）下，完全退出 DSH 后跑 `cleanup-once.ps1`，把 Cookies 库重命名重建。 / For the worst case where the runtime store is unreachable, run `cleanup-once.ps1` with DSH fully closed to rename and rebuild the Cookies DB.
+1. **声明式兜底（必定生效）/ Declarative cap (always on):** 把 `connection.cookieMaxAgeDays` 从默认 30 天压到 **7 天**，旧 cookie 自己会过期，根本堆不到 16KB。这是"防未来"的真正手段。 / Caps `connection.cookieMaxAgeDays` from the default 30 days down to **7 days**, so old cookies expire on their own and can never pile up to 16 KiB. This is the real "prevent future pile-up" measure.
+2. **诊断 + 指引（本面板）/ Diagnostics + guidance (this panel):** 探测 cookie 存储是否可达（当前构建一律"不可达"，并附上探测到的 `electron` 对象证明），并把**离线清理脚本的路径与步骤**告诉用户。 / Probes cookie-store reachability (always "unreachable" in the current build, with the probed `electron` object as proof) and tells the user the **offline cleanup script path + steps**.
+3. **一次性离线清理（真正解除 431）/ One-shot offline cleanup (the real 431 fix):** 完全退出 DSH 后跑 `cleanup-once.ps1`，把 Cookies 库重命名重建。 / With DSH fully closed, run `cleanup-once.ps1` to rename and rebuild the Cookies DB.
 
 ## 安装 / Installation
 
@@ -46,8 +66,8 @@
 - **English:** Open the DSH desktop GUI → left sidebar **Plugins** → **Install a third-party plugin** → paste the repo URL `https://github.com/RAECYY/dsh-cookie-pruner.git` (or `github:RAECYY/dsh-cookie-pruner`) → confirm. The installer runs `pnpm add` for dependencies (`@deepseek-ai/schemastery`) and registers it as a desktop bundle via `dsh.bundle`; `dsh.client` + `exports["./client"]` make the browser half load too.
 
 **方式二 / Option 2（无需联网，本地目录）：**
-- **中文：** 同样在「插件」页 → **Install a third-party plugin** → 选择本地目录 `D:\\AI\\dsh-cookie-pruner`。若走 `file:///` 手动注册（方式三），请先在该目录执行一次 `pnpm add @deepseek-ai/schemastery`（本仓库已内置 `node_modules` 时无需再跑）。
-- **English:** Same Plugins page → **Install a third-party plugin** → pick the local directory `D:\\AI\\dsh-cookie-pruner`. If you register manually via `file:///` (Option 3), run `pnpm add @deepseek-ai/schemastery` once in that directory first (skip it if `node_modules` already exists).
+- **中文：** 同样在「插件」页 → **Install a third-party plugin** → 选择本地目录 `D:\\AI\\dsh-cookie-pruner`。若走 `file:///` 手动注册（方式三），请先在该目录执行一次 `pnpm add @deepseek-ai/schemastery`。
+- **English:** Same Plugins page → **Install a third-party plugin** → pick the local directory `D:\\AI\\dsh-cookie-pruner`. If you register manually via `file:///` (Option 3), run `pnpm add @deepseek-ai/schemastery` once in that directory first.
 
 **方式三 / Option 3（手动兜底 / manual fallback）：** 若弹窗两种方式都失败，手动在 `C:\\Users\\ASUS\\.dsh\\profiles\\desktop\\cordis.patch.yml` 末尾追加（注意用 `file:///` 而非裸 `C:/`）：
 
@@ -65,51 +85,41 @@
 
 ## 验证 / Verification
 
-> **中文：** ✅ 面板现在就在**左下角账户头像 → 设置**里。v0.1.4 起，插件带一个浏览器半边（`client.js`），通过 `settings.section` 插槽向「设置」对话框贡献了一个真正的导航项「**Cookie 清理**」和一个带按钮的面板。这和之前 v0.1.2/v0.1.3 的自动表单不同——那个只在「插件」侧边栏的详情页里、很难找到，现已不再依赖它。
+> **中文：** ✅ 面板现在就在**左下角账户头像 → 设置**里。v0.1.4 起，插件带一个浏览器半边（`client.js`），通过 `settings.section` 插槽向「设置」对话框贡献了一个真正的导航项「**Cookie 清理**」和一个面板。v0.1.6 起该面板**诚实地**显示：条数 = `读不到（-1）`、运行时存储 = `不可用`，并给出"如何彻底清理（离线）"按钮，点击后显示离线脚本路径与步骤。
 >
-> **English:** ✅ The panel now lives in **bottom-left account avatar → Settings**. Since v0.1.4 the plugin ships a browser half (`client.js`) that contributes a real nav entry "**Cookie 清理**" plus a button panel to the Settings dialog via the `settings.section` slot. This is different from the v0.1.2/v0.1.3 auto-form, which only appeared on the plugin's detail page in the Plugins sidebar and was hard to find — it is no longer relied upon.
+> **English:** ✅ The panel now lives in **bottom-left account avatar → Settings**. Since v0.1.4 the plugin ships a browser half (`client.js`) that contributes a real nav entry "**Cookie 清理**" plus a panel to the Settings dialog via the `settings.section` slot. Since v0.1.6 the panel **honestly** shows: count = `读不到（-1）` / `unreachable`, runtime store = `不可用` / `unavailable`, and a "如何彻底清理（离线）" button that, when clicked, reveals the offline script path + steps.
 
 1. **中文：** 装完重启后，点 **左下角账户头像 → 设置（Ctrl+,）**，在左侧导航里找到「**Cookie 清理**」（排在「通用设置」和「模型」之间）。 / **English:** After restarting, click **bottom-left account avatar → Settings (Ctrl+,)** and find "**Cookie 清理**" in the left nav (between 通用设置 and 模型).
-2. **中文：** 面板会显示：`当前认证 Cookie 条数`、`运行时存储`（可用/不可用）、`模式`（干跑 / 生效）、`上次清理结果`，以及一个「**一键清理（保留最近 5 条）**」按钮。 / **English:** The panel shows the live count, runtime-store status, mode (dry-run / active), last result, and a "**一键清理（保留最近 5 条）**" button.
-3. **中文：** **首装默认 `dryRun: true`（只统计、不删）**。先确认条数合理、`运行时存储 = 可用`，再把 `index.js` 里 `DEFAULT_CONFIG.dryRun` 改为 `false` 并重启 DSH。 / **English:** **On first install `dryRun: true` (count only, no deletion).** Confirm the count looks right and `运行时存储 = 可用`, then set `DEFAULT_CONFIG.dryRun` to `false` in `index.js` and restart DSH.
+2. **中文：** 面板会显示：`当前认证 Cookie 条数`（读不到(-1)）、`运行时存储`（不可用）、一段**说明**解释为什么读不到，以及一个「**如何彻底清理（离线）**」按钮。 / **English:** The panel shows the count (`读不到(-1)`), the store status (`不可用`/`unavailable`), a note explaining why it can't be read, and a "**如何彻底清理（离线）**" button.
+3. **中文：** 点「如何彻底清理（离线）」→ 面板会显示 `cleanup-once.ps1` 的**完整路径**（如 `D:\AI\dsh-cookie-pruner\cleanup-once.ps1`）与**步骤**：① 完全退出 DSH；② 以管理员身份打开 PowerShell；③ 运行 `& "D:\AI\dsh-cookie-pruner\cleanup-once.ps1"`；④ 重新打开 DSH。这一步才会真正重建干净的 Cookies 库、解除 431。 / **English:** Click "如何彻底清理（离线）" → the panel shows the **full path** to `cleanup-once.ps1` (e.g. `D:\AI\dsh-cookie-pruner\cleanup-once.ps1`) and the **steps**: ① fully quit DSH; ② open PowerShell as admin; ③ run `& "D:\AI\dsh-cookie-pruner\cleanup-once.ps1"`; ④ reopen DSH. This is what actually rebuilds a clean Cookies DB and clears 431.
 
-> **中文（v0.1.5 修复「显示零个」）：** 之前启动后「Cookie 清理」分区会显示 **当前条数 = 0 / 运行时存储 = 不可用**。这不是真正的空库，而是刚启动时 Electron cookie 库尚未就绪，首次读取返回空或抛错，而当时没有重试、也没有周期刷新，于是这个失败值被冻结了。v0.1.5 做了三处修复：① 读取前先 `await session.defaultSession.cookies.ready`（带 5 秒超时兜底）；② `readAuthCookiesWithRetry()` 连续重试 5 次、每次间隔 1 秒；③ 新增每 15 秒的 `countPollMs` 周期发布，让任何早期的瞬时失败都能自愈，条数也会持续保持最新。若仍显示「不可用」，面板会直接在「上次结果」里给出读取出错原因（例如 `electron not importable` 或 `cookies.get failed: ...`），便于排查。
+> **中文（v0.1.5 → v0.1.6 的更正）：** v0.1.5 以为"显示零个"是启动早期 cookie 库未就绪的时序竞态，于是加了 `cookies.ready` 等待 + 重试 + 15 秒周期发布。但这个假设是**错的**——用户机器上重启后仍显示 0，说明不是时序问题。真正的根因是插件沙箱拿不到 `session.defaultSession.cookies`（架构限制）。v0.1.6 不再假装能读/删，改为诚实展示探测证明 + 离线解法。
 >
-> **English (v0.1.5 fixes the "shows zero" issue):** Earlier, right after launch the "Cookie 清理" section showed **count = 0 / store = unavailable**. That was not an empty store — it was the Electron cookie store not being ready yet on a fresh launch, so the first read returned empty or threw, and because there was no retry and no periodic refresh the failed value got frozen. v0.1.5 fixes this three ways: ① `await session.defaultSession.cookies.ready` (with a 5 s timeout fallback) before reading; ② `readAuthCookiesWithRetry()` retries up to 5 times, 1 s apart; ③ a new `countPollMs` (15 s) periodic publisher so any early transient failure self-heals and the count stays fresh. If it still says "unavailable", the panel now surfaces the read error directly in "lastResult" (e.g. `electron not importable` or `cookies.get failed: ...`) for easy diagnosis.
-4. **中文：** 点「一键清理」→ 几秒内插件会清理到只剩最近 5 条，条数随之下降，结果框显示"已删除 N 条，保留 M 条"。 / **English:** Click the clean button → within seconds the plugin prunes down to the newest 5, the count drops and the result box reports "removed N, kept M".
-5. **中文：** 确认桌面能正常启动（不再 431）。 / **English:** Confirm the desktop boots normally (no more 431).
-
-> **中文：** Host 与 Client 之间的 5 个字段（`lastCount` / `available` / `dryRun` / `cleanRequest` / `lastResult`）是**运行时状态**（volatile），只写进当前 profile 的内存配置、不持久化到 YAML；插件每次启动都会重新计算 `lastCount`。真正需要持久的开关是 `autoPrune` / `dryRun` 等，改 `index.js` 的 `DEFAULT_CONFIG` 或在 `cordis.patch.yml` 的 `config:` 里配置。
->
-> **English:** The 5 fields bridging Host and Client (`lastCount` / `available` / `dryRun` / `cleanRequest` / `lastResult`) are **runtime state** (volatile) — they only update the in-memory profile config, not the YAML. The plugin recomputes `lastCount` on every launch. Persistent switches (`autoPrune`, `dryRun`, …) are edited in `DEFAULT_CONFIG` in `index.js` or the `config:` block of `cordis.patch.yml`.
+> **English (v0.1.5 → v0.1.6 correction):** v0.1.5 assumed the "shows zero" was a startup timing race (cookie store not ready), so it added `cookies.ready` wait + retry + 15 s periodic publish. That assumption was **wrong** — the user still saw 0 after restart, proving it wasn't a timing issue. The real root cause is the plugin sandbox cannot reach `session.defaultSession.cookies` (an architecture limit). v0.1.6 stops pretending to read/delete and instead shows the proof + the offline fix honestly.
 
 ## 可调参数 / Configurable parameters (edit `DEFAULT_CONFIG` at the top of `index.js`)
 
 | 参数 / Parameter | 默认 / Default | 说明 / Description |
 |---|---|---|
 | `cookieMaxAgeDays` | 7 | Layer A 兜底天数 / Layer A fallback days |
-| `autoPrune` | true | 是否运行时自动清理 / Enable runtime auto-prune |
-| `pruneThreshold` | 12 | 数量超过此值才自动清理 / Auto-prune when count exceeds this |
-| `keepLatest` | 10 | 自动清理保留最近 N 条 / Keep newest N on auto-prune |
-| `manualKeepLatest` | 5 | 一键清理保留最近 N 条 / Keep newest N on one-click clean |
-| `dryRun` | true | **true=只统计不删**，确认无误后改 false / **true=count only, no delete**; set false after verifying |
-| `checkIntervalMs` | 300000 | 自动清理间隔（5 分钟）/ Auto-prune interval (5 min) |
-| `startDelayMs` | 30000 | 启动后延迟首次检查（30 秒）/ Delay before first check after startup (30 s) |
-| `cleanPollMs` | 3000 | 轮询「一键清理」请求的间隔（3 秒）/ Poll interval for the clean request (3 s) |
-| `countPollMs` | 15000 | 重新发布实时条数的间隔（15 秒），让启动早期的读取失败自愈 / Re-publish the live count every 15 s so an early read failure self-heals |
+| `autoPrune` | true | 运行时防御开关（当前构建因沙箱限制无法真正读库，仅作预防性标记）/ Runtime defense flag (no real read in current build due to sandbox limit; preventive marker only) |
+| `checkIntervalMs` | 300000 | 自动刷新诊断的间隔（5 分钟）/ Diagnostic refresh interval (5 min) |
+| `startDelayMs` | 30000 | 启动后延迟首次诊断（30 秒）/ Delay before first diagnostic (30 s) |
+| `cleanPollMs` | 3000 | 轮询"如何清理"请求的间隔（3 秒）/ Poll interval for the "how to clean" request (3 s) |
+| `countPollMs` | 15000 | 重新发布诊断的间隔（15 秒），保持面板新鲜 / Re-publish the diagnostic every 15 s to keep the panel fresh |
 
 ## 安全说明 / Safety
 
-- **中文：** 所有清理只针对 **名称以 `dsh-auth-` 开头、且属于 `127.0.0.1` 本地** 的 cookie；绝不碰其它 cookie。 / **English:** All cleanup only touches cookies whose **name starts with `dsh-auth-` and belong to the local `127.0.0.1`** host; no other cookies are ever touched.
-- **中文：** 当前会话那条永远是最新的，一定被保留。 / **English:** The current session's cookie is always the newest and is always kept.
-- **中文：** 插件代码全部 `try/catch` 包裹，**加载失败也不会拖垮 DSH 桌面端**（否则整页打不开）。`@deepseek-ai/schemastery` 用动态 `import()` 加载，缺失时只是没有自动表单（但 v0.1.4 的「Cookie 清理」分区由 `client.js` 提供，仍会显示）。 / **English:** All plugin code is wrapped in `try/catch`; **even a load failure cannot break the DSH desktop** (otherwise the whole UI fails to open). `@deepseek-ai/schemastery` is loaded through a dynamic `import()`, so a missing dependency only disables the auto-form — the v0.1.4 "Cookie 清理" section comes from `client.js` and still shows.
-- **中文：** 不修改任何 asar / 程序文件；离线脚本只做重命名且保留 `.bak` 备份。 / **English:** No asar / program files are modified; the offline script only renames and keeps a `.bak` backup.
+- **中文：** 所有清理逻辑只针对名称以 `dsh-auth-` 开头的 cookie（离线脚本侧）。运行时面板**不做任何删除**——它只展示信息与离线指引，因此**绝不会**误删其它 cookie 或破坏登录态。 / **English:** All cleanup targets only cookies whose name starts with `dsh-auth-` (on the offline-script side). The runtime panel **performs no deletion** — it only shows info and offline guidance, so it can **never** accidentally remove other cookies or break logins.
+- **中文：** 离线脚本只做重命名且保留 `.bak` 备份；副作用是已保存登录态会丢失，需重新登录。 / **English:** The offline script only renames and keeps a `.bak` backup; the side effect is that saved logins are lost and must be re-authenticated.
+- **中文：** 插件代码全部 `try/catch` 包裹，**加载失败也不会拖垮 DSH 桌面端**（否则整页打不开）。`@deepseek-ai/schemastery` 用动态 `import()` 加载，缺失时只是没有自动表单（但「Cookie 清理」分区由 `client.js` 提供，仍会显示）。 / **English:** All plugin code is wrapped in `try/catch`; **even a load failure cannot break the DSH desktop** (otherwise the whole UI fails to open). `@deepseek-ai/schemastery` is loaded through a dynamic `import()`, so a missing dependency only disables the auto-form — the "Cookie 清理" section comes from `client.js` and still shows.
+- **中文：** 不修改任何 asar / 程序文件。 / **English:** No asar / program files are modified.
 
 ## 关于「账户 → 设置」里的分区 / About the account → Settings section
 
-**中文：** v0.1.4 采用 DSH 官方的双半边（Host + Client）插件结构：Host 半边 `index.js` 负责读写 cookie 和推送状态；浏览器半边 `client.js` 用 `window.__ModuleLoader__.load({ id: 'dsh-cookie-pruner', factory(require){ ... } })` 注册，通过 `ctx.slots.inject('settings.section', ...)` 向「设置」对话框贡献一个导航项与 React 面板。面板通过 `ctx.configForms.get('dsh-cookie-pruner-host')` 读取 Host 发布的 5 个 volatile 字段，用 `form.set('cleanRequest', true)` 触发清理（Host 每 `cleanPollMs` 轮询一次，处理完把标志复位）。React 由浏览器模块表提供（`require('react')`），不引入任何 Harness Client 包、不打包重复 React、不用 iframe，因此能跟随宿主的明暗主题。
+**中文：** 插件采用 DSH 官方的双半边（Host + Client）结构：Host 半边 `index.js` 负责探测并推送诊断；浏览器半边 `client.js` 用 `window.__ModuleLoader__.load({ id: 'dsh-cookie-pruner', factory(require){ ... } })` 注册，通过 `ctx.slots.inject('settings.section', ...)` 向「设置」对话框贡献一个导航项与 React 面板。面板通过 `ctx.configForms.get('dsh-cookie-pruner-host')` 读取 Host 发布的 volatile 字段（当前为 `lastCount` / `available` / `cleanRequest` / `lastResult`），用 `form.set('cleanRequest', true)` 触发"如何清理"指引（Host 每 `cleanPollMs` 轮询一次，处理完把标志复位）。React 由浏览器模块表提供（`require('react')`），不引入任何 Harness Client 包、不打包重复 React、不用 iframe，因此能跟随宿主的明暗主题。
 
-**English:** v0.1.4 uses DSH's official dual-half (Host + Client) plugin structure: the Host half `index.js` handles cookie read/write and state publishing; the browser half `client.js` registers via `window.__ModuleLoader__.load({ id: 'dsh-cookie-pruner', factory(require){ ... } })` and contributes a nav entry + React panel to the Settings dialog through `ctx.slots.inject('settings.section', ...)`. The panel reads the 5 volatile fields published by the Host via `ctx.configForms.get('dsh-cookie-pruner-host')` and triggers pruning with `form.set('cleanRequest', true)` (the Host polls every `cleanPollMs` and resets the flag). React comes from the browser module table (`require('react')`) — no Harness Client package import, no duplicate React bundle, no iframe, so it follows the host's light/dark theme.
+**English:** The plugin uses DSH's official dual-half (Host + Client) structure: the Host half `index.js` probes and publishes diagnostics; the browser half `client.js` registers via `window.__ModuleLoader__.load({ id: 'dsh-cookie-pruner', factory(require){ ... } })` and contributes a nav entry + React panel to the Settings dialog through `ctx.slots.inject('settings.section', ...)`. The panel reads the volatile fields published by the Host via `ctx.configForms.get('dsh-cookie-pruner-host')` (currently `lastCount` / `available` / `cleanRequest` / `lastResult`) and triggers the "how to clean" guidance with `form.set('cleanRequest', true)` (the Host polls every `cleanPollMs` and resets the flag). React comes from the browser module table (`require('react')`) — no Harness Client package import, no duplicate React bundle, no iframe, so it follows the host's light/dark theme.
 
 ## License / 许可证
 

@@ -9,26 +9,23 @@
  *
  * Three defenses:
  *   A) Layer A (cordis.patch.yml) caps `connection.cookieMaxAgeDays` to 7,
- *      guaranteeing old cookies expire on their own.
- *   B) This Host half, while DSH is live, reads the Electron Chromium cookie
- *      store via `session.defaultSession.cookies` and prunes the oldest
- *      `dsh-auth-*` rows, keeping the newest `keepLatest` (default 10) when the
- *      count exceeds `pruneThreshold` (default 12). It also publishes the live
- *      count into the "Cookie 清理" Settings section contributed by client.js
- *      (bottom-left account → 设置), and reacts to the `cleanRequest` button
- *      there, keeping the newest `manualKeepLatest` (default 5).
- *   C) For the worst case where the runtime store is unreachable, ship the
- *      offline `cleanup-once.ps1` (run with DSH fully closed) that renames the
- *      Chromium Cookies DB so DSH rebuilds a clean one.
+ *      guaranteeing old cookies expire on their own — prevents FUTURE pile-up.
+ *   B) This Host half. IMPORTANT HONEST NOTE (v0.1.6): a third-party plugin
+ *      host half runs inside a `node:vm` sandbox whose module linker maps
+ *      `electron` to the *renderer* bridge, so `session.defaultSession.cookies`
+ *      is NOT reachable from here. There is also no `ctx.cookies`/`ctx.session`
+ *      service, and the Chromium Cookies SQLite DB is exclusively locked while
+ *      DSH runs. Therefore the plugin CANNOT read or delete the cookies at
+ *      runtime. Instead it detects the situation, publishes a precise diagnostic
+ *      into the "Cookie 清理" Settings section (bottom-left account → 设置),
+ *      and — when asked — prints the offline cleanup instructions.
+ *   C) For the actual 431 remedy, ship the offline `cleanup-once.ps1` (run with
+ *      DSH fully closed) that renames the Chromium Cookies DB so DSH rebuilds a
+ *      clean one. This is the ONLY thing that clears the existing pile-up.
  *
- * SAFETY: every cookie operation is fenced to name prefix `dsh-auth-` and host
- * `127.0.0.1` (or any loopback). We never touch other cookies. The CURRENT
- * session's cookie is the newest and is always kept. All work is wrapped so a
- * failure can NEVER break DSH startup (the desktop blocks the whole UI on a
- * plugin load error).
- *
- * DEFAULT: `dryRun: true` — only counts, never deletes. Flip it from the
- * Settings form (or in the profile patch) after you confirm the number.
+ * SAFETY: we never read/write files outside the documented paths, and every
+ * operation is wrapped so a failure can NEVER break DSH startup (the desktop
+ * blocks the whole UI on a plugin load error).
  */
 
 import { createRequire } from 'node:module'
@@ -40,19 +37,17 @@ const COOKIE_PREFIX = 'dsh-auth-'
 /** Profile entry id — must match the `insert:` row in cordis.patch.yml. */
 const NS = 'dsh-cookie-pruner-host'
 
+/** Where the offline cleanup script lives (used in the instructions below). */
+const CLEANUP_SCRIPT = 'D:\\AI\\dsh-cookie-pruner\\cleanup-once.ps1'
+
 // Config schema (read via the plugin's Config export / cordis; defaults here).
 const DEFAULT_CONFIG = {
-  cookieMaxAgeDays: 7,   // mirrors Layer A; mainly informational
-  autoPrune: true,
-  pruneThreshold: 12,    // auto-prune only when count > this
-  keepLatest: 10,        // auto-prune keeps the newest N
-  manualKeepLatest: 5,   // one-click clean keeps the newest N
-  dryRun: true,          // safety: true = count only, no deletes
-  checkIntervalMs: 300000, // 5 minutes
+  cookieMaxAgeDays: 7,   // mirrors Layer A; preventive only
+  autoPrune: true,       // Layer A cap is on (prevents future pile-up)
+  checkIntervalMs: 300000, // 5 minutes — how often we refresh the diagnostic
   startDelayMs: 30000,     // 30s after load
-  cleanPollMs: 3000,       // how often we look for a Settings clean request
-  countPollMs: 15000,      // re-publish the live count so a transient early
-                          // read failure self-heals and the number stays fresh
+  cleanPollMs: 3000,       // how often we look for a Settings clean-request
+  countPollMs: 15000,      // re-publish the diagnostic so it stays fresh
 }
 
 // Loaded defensively: on a `file:///` registration without a reachable
@@ -79,22 +74,19 @@ try {
  */
 export const Config = z
   ? z.object({
-      lastCount: z.number().description('当前 dsh-auth-* cookie 总条数').default(0).volatile(),
-      available: z.boolean().description('运行时 cookie 存储是否可读').default(false).volatile(),
-      dryRun: z.boolean().description('干跑：只统计，不删除').default(true).volatile(),
-      cleanRequest: z.boolean().description('置为 true 触发一次清理（保留最近 5 条）').default(false).volatile(),
-      lastResult: z.string().description('上一次清理结果').default('').volatile(),
+      lastCount: z.number().description('当前 dsh-auth-* cookie 条数（-1 = 沙箱读不到）').default(-1).volatile(),
+      available: z.boolean().description('运行时 cookie 存储是否可读（本架构下恒为 false）').default(false).volatile(),
+      cleanRequest: z.boolean().description('置为 true 让插件输出离线清理指引').default(false).volatile(),
+      lastResult: z.string().description('诊断 / 离线清理指引').default('').volatile(),
     })
   : undefined
 
 /** Volatile field names — the only config keys dsh-settings accepts at runtime. */
-const VOLATILE_KEYS = ['lastCount', 'available', 'dryRun', 'cleanRequest', 'lastResult']
+const VOLATILE_KEYS = ['lastCount', 'available', 'cleanRequest', 'lastResult']
 
 // A `.volatile()` field parses into a cosmokit volatile cell — a plain OBJECT
 // carrying a `.get()` reader (marked with Symbol.for("cosmokit.volatile.write")).
-// Cordis hands us that parsed value, so every read must unwrap it: otherwise
-// `dryRun: true` inside the cell would look like a truthy object and `cleanRequest
-// === true` would never match.
+// Cordis hands us that parsed value, so every read must unwrap it.
 const VOLATILE_WRITE = Symbol.for('cosmokit.volatile.write')
 function readValue(value) {
   if (value !== null && typeof value === 'object' &&
@@ -109,12 +101,11 @@ function resolveConfig(raw) {
   if (raw && typeof raw === 'object') {
     for (const [key, value] of Object.entries(raw)) c[key] = readValue(value)
   }
-  for (const key of ['pruneThreshold', 'keepLatest', 'manualKeepLatest', 'checkIntervalMs', 'startDelayMs', 'cleanPollMs', 'countPollMs']) {
+  for (const key of ['checkIntervalMs', 'startDelayMs', 'cleanPollMs', 'countPollMs']) {
     const n = Number(c[key])
     c[key] = Number.isFinite(n) && n > 0 ? n : DEFAULT_CONFIG[key]
   }
   c.autoPrune = c.autoPrune !== false
-  c.dryRun = c.dryRun !== false
   return c
 }
 
@@ -125,92 +116,88 @@ function isAuthCookie(cookie) {
   return host === '127.0.0.1' || host === 'localhost' || host.startsWith('127.0.0.')
 }
 
-// Returns { available, cookies, error }. `available=false` means we could not
-// reach the Electron cookie store (e.g. non-desktop build) — degrade gracefully.
-async function readAuthCookies() {
-  let session
+/**
+ * Probe whether the Electron cookie store is reachable from THIS plugin realm.
+ *
+ * Verified finding (DSH 44.7.0 / @deepseek-ai 0.2.2-rc.1): the plugin host half
+ * is evaluated inside a `node:vm` sandbox whose module linker maps `electron`
+ * to the renderer bridge. That object has no `.session.defaultSession.cookies`,
+ * so the main-process cookie store is unreachable here. We capture the proof
+ * (the shape of the object we DID get) so the UI can show it — that's the most
+ * useful thing this plugin can do, because it tells the user exactly why the
+ * one-click clean can't run from Settings.
+ *
+ * Returns { available, cookies, error, probe }.
+ */
+async function probeCookieStore() {
+  let electron
   try {
-    const electron = await import('electron')
-    session = electron.session || (electron.default && electron.default.session)
+    electron = await import('electron')
   } catch (e) {
-    return { available: false, cookies: [], error: 'electron not importable: ' + e.message }
+    return { available: false, cookies: [], error: 'electron not importable: ' + e.message, probe: null }
   }
-  if (!session || !session.defaultSession || !session.defaultSession.cookies) {
-    return { available: false, cookies: [], error: 'session.defaultSession.cookies missing' }
-  }
-  const cookiesApi = session.defaultSession.cookies
-  // On a freshly-started desktop the cookie store may not be loaded yet. The
-  // Electron `Cookies` object exposes a `ready` promise (resolved once the
-  // store is read off disk). Awaiting it — with a short timeout so a missing
-  // promise can't hang us — avoids the all-too-common "0 cookies on first
-  // read" that otherwise freezes in the Settings UI.
-  if (cookiesApi.ready && typeof cookiesApi.ready.then === 'function') {
-    try { await Promise.race([cookiesApi.ready, new Promise((_, rej) => setTimeout(() => rej(new Error('ready timeout')), 5000))]) } catch { /* fall through and try get() anyway */ }
-  }
+
+  let probe = {}
   try {
-    const all = await cookiesApi.get({})
-    const auth = all.filter(isAuthCookie)
-    // Newest first. Electron cookies reliably carry `expirationDate`; under the
-    // fixed cookieMaxAgeDays the one set most recently has the largest value,
-    // so the CURRENT session cookie (set this launch) always sorts first and is
-    // kept. Fall back to creationDate, then 0, so a missing field can never make
-    // the order unstable enough to drop the live cookie.
-    const ts = (c) => (c.expirationDate || c.creationDate || 0)
-    auth.sort((a, b) => ts(b) - ts(a))
-    return { available: true, cookies: auth, error: null }
+    const e = electron.default ?? electron
+    probe = {
+      typeofElectron: typeof electron,
+      keys: Array.isArray(Object.keys(e)) ? Object.keys(e).slice(0, 20) : '(no keys)',
+      hasSession: !!(e && e.session),
+      hasDefaultSession: !!(e && e.session && e.session.defaultSession),
+      hasCookies: !!(e && e.session && e.session.defaultSession && e.session.defaultSession.cookies),
+      hasDefaultSessionViaDefault: !!(e && e.default && e.default.session && e.default.session.defaultSession),
+    }
   } catch (e) {
-    return { available: false, cookies: [], error: 'cookies.get failed: ' + e.message }
+    probe = { probeError: e.message }
   }
-}
 
-// First read on a fresh launch is fragile: the store can be momentarily empty
-// or `get({})` can throw. Retry a few times with a short gap so a transient
-// miss self-heals instead of pinning the UI at 0.
-async function readAuthCookiesWithRetry(attempts = 5) {
-  let last = { available: false, cookies: [], error: 'no attempt' }
-  for (let i = 0; i < attempts; i++) {
-    last = await readAuthCookies()
-    if (last.available && last.cookies.length > 0) return last
-    // Even an `available` but empty store is suspicious this early; retry,
-    // but only up to `attempts` times so we don't spin forever.
-    if (i < attempts - 1) await new Promise((r) => setTimeout(r, 1000))
-  }
-  return last
-}
-
-// Remove all but the newest `keep` cookies among the auth set.
-// Returns { removed, kept, available, error }.
-async function pruneAuthCookies(keep) {
-  const { available, cookies, error } = await readAuthCookies()
-  if (!available) return { removed: 0, kept: cookies.length, available: false, error }
-  if (cookies.length <= keep) {
-    return { removed: 0, kept: cookies.length, available: true }
-  }
-  const electron = await import('electron')
-  const session = electron.session || (electron.default && electron.default.session)
-  const toRemove = cookies.slice(keep)
-  let removed = 0
-  let lastError = null
-  for (const cookie of toRemove) {
-    const url = (cookie.secure ? 'https://' : 'http://') +
-      (cookie.domain || cookie.host_key || '127.0.0.1') + (cookie.path || '/')
-    try {
-      await session.defaultSession.cookies.remove(url, cookie.name)
-      removed++
-    } catch (e) {
-      lastError = e.message
+  const reachable = !!(electron && electron.session && electron.session.defaultSession && electron.session.defaultSession.cookies)
+  if (!reachable) {
+    return {
+      available: false,
+      cookies: [],
+      error: 'session.defaultSession.cookies missing — plugin vm sandbox cannot reach the Electron main-process cookie store',
+      probe,
     }
   }
-  return { removed, kept: cookies.length - removed, available: true, error: lastError }
+
+  // Defensive: if a future build exposes the store, actually read it.
+  try {
+    const all = await electron.session.defaultSession.cookies.get({})
+    const auth = all.filter(isAuthCookie)
+    auth.sort((a, b) => (b.expirationDate || b.creationDate || 0) - (a.expirationDate || a.creationDate || 0))
+    return { available: true, cookies: auth, error: null, probe }
+  } catch (e) {
+    return { available: false, cookies: [], error: 'cookies.get failed: ' + e.message, probe }
+  }
+}
+
+function offlineInstructions() {
+  return [
+    '⚠️ 运行时无法清理：本插件在 DSH 插件沙箱（node:vm）中运行，沙箱把 `electron` 映射到渲染进程桥接，没有 .session.defaultSession.cookies。这是 DSH 桌面端插件架构限制，不是本插件 bug，也不是你的操作问题。',
+    '',
+    '真正能清除已有 cookie 堆积（解决 HTTP 431）的办法：完全退出 DSH 后跑离线脚本。',
+    '脚本路径（DSH 已关闭时运行）：',
+    `  ${CLEANUP_SCRIPT}`,
+    '',
+    '步骤：',
+    '  1. 完全退出 DeepSeek Harness 桌面端（右键托盘图标退出，并确认进程已结束）',
+    '  2. 以管理员身份打开 PowerShell',
+    `  3. 运行：  & "${CLEANUP_SCRIPT}"`,
+    '  4. 重新打开 DSH —— 它会重建干净的 Cookies 库，431 不再出现',
+    '',
+    '注：该脚本只是把 Cookies 库改名成 .bak（保留备份），不会删除任何程序文件；副作用是已保存的登录态会丢失，需要重新登录。',
+    '',
+    '预防（已生效）：cordis.patch.yml 里的 connection.cookieMaxAgeDays: 7 把未来 cookie 寿命压到 7 天，旧 cookie 会自行过期，不再堆到 16KB。',
+  ].join('\n')
 }
 
 export function apply(ctx, config) {
   const cfg = resolveConfig(config)
 
   // Live config: volatile fields are edited in place, so `apply` is never
-  // re-run. Always read the latest values through the fiber. `effectiveConfig`
-  // is the host-side view dsh-settings reads too — resolveConfig unwraps the
-  // volatile cells for us.
+  // re-run. Always read the latest values through the fiber.
   const live = () => {
     let raw = null
     try { raw = ctx.fiber?.effectiveConfig ?? null } catch { /* ignore */ }
@@ -261,39 +248,44 @@ export function apply(ctx, config) {
 
   let busy = false
 
+  // Publish the diagnostic. In this build `available` is always false and the
+  // count is -1 (unknown); we surface the proof + the offline remedy.
   const publishCount = async () => {
     try {
-      const { available, cookies, error } = await readAuthCookiesWithRetry()
-      await push({ lastCount: cookies.length, available, lastResult: available ? '' : ('读取失败：' + (error || 'unknown')) })
+      const { available, cookies, error, probe } = await probeCookieStore()
+      let lastResult
+      if (available) {
+        lastResult = `运行时读取成功，当前 ${cookies.length} 条 dsh-auth-* cookie。`
+      } else {
+        const probeStr = probe ? ('\n\n探测到的 electron 对象：\n' + JSON.stringify(probe, null, 2)) : ''
+        lastResult = '⚠️ 无法在运行时读取 cookie：' + error + probeStr +
+          '\n\n' + offlineInstructions()
+      }
+      await push({ lastCount: available ? cookies.length : -1, available, lastResult })
     } catch (e) {
       console.warn('[dsh-cookie-pruner] count publish error:', e.message)
     }
   }
 
+  // Preventive-only: if a future build ever exposes the store, prune old ones.
+  // In the current build this is a no-op (available is always false).
   const runAutoPrune = async () => {
     const c = live()
     if (!c.autoPrune) return
     try {
-      const { available, cookies, error } = await readAuthCookiesWithRetry()
+      const { available, cookies, error } = await probeCookieStore()
       if (!available) {
-        await push({ available: false, lastResult: '读取失败：' + (error || 'unknown') })
+        // Don't spam the diagnostic on every interval — publishCount handles it.
         return
       }
       await push({ lastCount: cookies.length, available: true })
-      if (c.dryRun) return // safety: do not delete while dry-run
-      if (cookies.length <= c.pruneThreshold) return
-      const state = await pruneAuthCookies(c.keepLatest)
-      if (state.removed > 0) {
-        console.log(`[dsh-cookie-pruner] auto-pruned ${state.removed} old dsh-auth-* cookies (kept ${state.kept})`)
-        await push({ lastCount: state.kept, lastResult: `自动清理：删除 ${state.removed} 条，保留 ${state.kept} 条` })
-      }
     } catch (e) {
       console.warn('[dsh-cookie-pruner] auto-prune error:', e.message)
     }
   }
 
-  // Watch the Settings `cleanRequest` toggle. Reset it first so a slow prune
-  // can never re-trigger itself.
+  // The "clean" action can't delete at runtime (sandbox limit). Instead it
+  // prints the offline cleanup instructions into lastResult.
   const checkCleanRequest = async () => {
     if (busy) return
     let flag = false
@@ -302,36 +294,15 @@ export function apply(ctx, config) {
     busy = true
     try {
       await push({ cleanRequest: false })
-      const c = live()
-      const { available, cookies, error } = await readAuthCookiesWithRetry()
-      if (!available) {
-        await push({ available: false, lastResult: '运行时存储不可用：' + (error || 'unknown') })
-        return
-      }
-      if (c.dryRun) {
-        await push({ lastCount: cookies.length, available: true, lastResult: `干跑开启，未删除（当前 ${cookies.length} 条）` })
-        return
-      }
-      if (cookies.length <= c.manualKeepLatest) {
-        await push({ lastCount: cookies.length, lastResult: `只有 ${cookies.length} 条，无需清理` })
-        return
-      }
-      const state = await pruneAuthCookies(c.manualKeepLatest)
-      await push({
-        lastCount: state.kept,
-        available: true,
-        lastResult: `已删除 ${state.removed} 条，保留 ${state.kept} 条`,
-      })
+      await push({ lastResult: offlineInstructions() })
     } catch (e) {
-      await push({ lastResult: '清理失败：' + e.message })
+      await push({ lastResult: '生成离线清理指引失败：' + e.message })
     } finally {
       busy = false
     }
   }
 
-  // Publish the live count. The first read retries internally (the store can
-  // be empty right after launch), then we keep re-publishing on an interval so
-  // a transient early miss self-heals and the number stays fresh.
+  // Publish the diagnostic. First after a short delay, then keep it fresh.
   ctx.effect(() => {
     let cancelled = false
     const run = async () => { if (!cancelled) await publishCount() }
@@ -342,9 +313,10 @@ export function apply(ctx, config) {
     return () => { cancelled = true; clearTimeout(t); clearInterval(interval) }
   })
 
-  // Schedule periodic check (start after a delay so we don't race welcome auth).
-  // Wrap in ctx.effect so cordis disposes the timer on plugin shutdown — this is
-  // the only correct teardown pattern in this build (no ctx.on('dispose')).
+  // Periodic refresh of the diagnostic (start after a delay so we don't race
+  // welcome auth). Wrap in ctx.effect so cordis disposes the timer on plugin
+  // shutdown — this is the only correct teardown pattern in this build
+  // (no ctx.on('dispose')).
   ctx.effect(() => {
     let interval = null
     const startTimer = () => {
