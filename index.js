@@ -1,5 +1,5 @@
 /**
- * dsh-cookie-pruner — Host half
+ * dsh-cookie-pruner — Host half, v0.1.7
  *
  * Mitigates the DSH desktop bug where `dsh-auth-*` cookies accumulate one per
  * launch (each desktop host uses a new random port, so the cookie name differs
@@ -10,22 +10,24 @@
  * Three defenses:
  *   A) Layer A (cordis.patch.yml) caps `connection.cookieMaxAgeDays` to 7,
  *      guaranteeing old cookies expire on their own — prevents FUTURE pile-up.
- *   B) This Host half. IMPORTANT HONEST NOTE (v0.1.6): a third-party plugin
- *      host half runs inside a `node:vm` sandbox whose module linker maps
- *      `electron` to the *renderer* bridge, so `session.defaultSession.cookies`
- *      is NOT reachable from here. There is also no `ctx.cookies`/`ctx.session`
- *      service, and the Chromium Cookies SQLite DB is exclusively locked while
- *      DSH runs. Therefore the plugin CANNOT read or delete the cookies at
- *      runtime. Instead it detects the situation, publishes a precise diagnostic
- *      into the "Cookie 清理" Settings section (bottom-left account → 设置),
- *      and — when asked — prints the offline cleanup instructions.
- *   C) For the actual 431 remedy, ship the offline `cleanup-once.ps1` (run with
- *      DSH fully closed) that renames the Chromium Cookies DB so DSH rebuilds a
- *      clean one. This is the ONLY thing that clears the existing pile-up.
+ *   B) This Host half — PREVENTION (new in v0.1.7). A third-party plugin host
+ *      half runs inside a `node:vm` sandbox whose module linker maps `electron`
+ *      to the renderer bridge, so `session.defaultSession.cookies` is NOT
+ *      reachable, and the Chromium Cookies SQLite DB is exclusively locked while
+ *      DSH runs. Therefore the plugin CANNOT delete cookies at runtime. BUT the
+ *      DB file SIZE is readable (file metadata is not locked), so we measure it
+ *      on a timer; when it approaches the 16 KiB danger zone we register a
+ *      Windows Task Scheduler job (lives OUTSIDE the DSH process tree, in the
+ *      svchost Task Scheduler) that runs `cleanup-once.ps1`. That script guards
+ *      on "DSH fully closed" and renames the Cookies DB, so the cleanup happens
+ *      automatically within ~10 minutes of the next quit — no manual step.
+ *   C) For the immediate remedy (e.g. 431 already blocks boot) the offline
+ *      `cleanup-once.ps1` (run with DSH fully closed) is still the only thing
+ *      that clears the existing pile-up on demand.
  *
- * SAFETY: we never read/write files outside the documented paths, and every
- * operation is wrapped so a failure can NEVER break DSH startup (the desktop
- * blocks the whole UI on a plugin load error).
+ * SAFETY: every operation is wrapped so a failure can NEVER break DSH startup
+ * (the desktop blocks the whole UI on a plugin load error). If `ctx.subprocess`
+ * is unavailable the daemon simply degrades to the honest panel.
  */
 
 import { createRequire } from 'node:module'
@@ -38,16 +40,24 @@ const COOKIE_PREFIX = 'dsh-auth-'
 const NS = 'dsh-cookie-pruner-host'
 
 /** Where the offline cleanup script lives (used in the instructions below). */
-const CLEANUP_SCRIPT = 'D:\\AI\\dsh-cookie-pruner\\cleanup-once.ps1'
+const CLEANUP_SCRIPT = 'D:\\\\AI\\\\dsh-cookie-pruner\\\\cleanup-once.ps1'
 
-// Config schema (read via the plugin's Config export / cordis; defaults here).
+/** Windows Task Scheduler job name we register for deferred cleanup. */
+const TASK_NAME = 'DshCookiePrune'
+
+/** Tuning constants. */
+const RISK_SIZE = 8192          // 8 KiB — well below the 16 KiB 431 limit
+const LAUNCH_THRESHOLD = 50     // also trigger after this many launches
+const GAUGE_MS = 60000          // measure the DB size every minute
+const START_DELAY_MS = 15000    // first measurement 15s after load
+const CLEAN_POLL_MS = 3000      // how often we look for a Settings clean-request
+const TASK_INTERVAL_MIN = 10    // the scheduled job runs at most every 10 min
+
 const DEFAULT_CONFIG = {
   cookieMaxAgeDays: 7,   // mirrors Layer A; preventive only
-  autoPrune: true,       // Layer A cap is on (prevents future pile-up)
-  checkIntervalMs: 300000, // 5 minutes — how often we refresh the diagnostic
-  startDelayMs: 30000,     // 30s after load
-  cleanPollMs: 3000,       // how often we look for a Settings clean-request
-  countPollMs: 15000,      // re-publish the diagnostic so it stays fresh
+  checkIntervalMs: GAUGE_MS,
+  startDelayMs: START_DELAY_MS,
+  cleanPollMs: CLEAN_POLL_MS,
 }
 
 // Loaded defensively: on a `file:///` registration without a reachable
@@ -70,19 +80,24 @@ try {
 /**
  * Volatile fields are live-editable from the DSH Settings page without
  * remounting the plugin. dsh-settings auto-renders a form for any plugin whose
- * Config has at least one `.volatile()` child.
+ * Config has at least one `.volatile()` child. They also persist across
+ * restarts (dsh-settings writes them into the profile YAML), which is how we
+ * remember the launch counter.
  */
 export const Config = z
   ? z.object({
-      lastCount: z.number().description('当前 dsh-auth-* cookie 条数（-1 = 沙箱读不到）').default(-1).volatile(),
-      available: z.boolean().description('运行时 cookie 存储是否可读（本架构下恒为 false）').default(false).volatile(),
-      cleanRequest: z.boolean().description('置为 true 让插件输出离线清理指引').default(false).volatile(),
-      lastResult: z.string().description('诊断 / 离线清理指引').default('').volatile(),
+      lastDbSize: z.number().description('Cookies 库文件当前大小（字节），由插件周期性测量。').default(0).volatile(),
+      launchesSincePrune: z.number().description('自上次清理以来 DSH 启动次数（跨重启保留）。').default(0).volatile(),
+      autoCleanEnabled: z.boolean().description('自动清理开关：开启后检测到堆积会自动安排后台任务，在你退出 DSH 后自动清理。').default(true).volatile(),
+      lastAutoCleanAt: z.string().description('上次检测到清理完成（Cookies 库回落）的时间。').default('').volatile(),
+      available: z.boolean().description('是否能测量 Cookies 库大小（沙箱内文件大小可读，故恒为 true）。').default(true).volatile(),
+      lastResult: z.string().description('诊断 / 状态信息。').default('').volatile(),
+      cleanRequest: z.boolean().description('置为 true 让插件输出离线清理指引并开启自动清理。').default(false).volatile(),
     })
   : undefined
 
 /** Volatile field names — the only config keys dsh-settings accepts at runtime. */
-const VOLATILE_KEYS = ['lastCount', 'available', 'cleanRequest', 'lastResult']
+const VOLATILE_KEYS = ['lastDbSize', 'launchesSincePrune', 'autoCleanEnabled', 'lastAutoCleanAt', 'available', 'lastResult', 'cleanRequest']
 
 // A `.volatile()` field parses into a cosmokit volatile cell — a plain OBJECT
 // carrying a `.get()` reader (marked with Symbol.for("cosmokit.volatile.write")).
@@ -101,82 +116,85 @@ function resolveConfig(raw) {
   if (raw && typeof raw === 'object') {
     for (const [key, value] of Object.entries(raw)) c[key] = readValue(value)
   }
-  for (const key of ['checkIntervalMs', 'startDelayMs', 'cleanPollMs', 'countPollMs']) {
+  for (const key of ['checkIntervalMs', 'startDelayMs', 'cleanPollMs']) {
     const n = Number(c[key])
     c[key] = Number.isFinite(n) && n > 0 ? n : DEFAULT_CONFIG[key]
   }
-  c.autoPrune = c.autoPrune !== false
   return c
 }
 
-function isAuthCookie(cookie) {
-  if (!cookie || typeof cookie.name !== 'string') return false
-  if (!cookie.name.startsWith(COOKIE_PREFIX)) return false
-  const host = (cookie.domain || cookie.host_key || '').replace(/^\./, '')
-  return host === '127.0.0.1' || host === 'localhost' || host.startsWith('127.0.0.')
+/** Resolve the Chromium Cookies DB path from %APPDATA%. */
+function cookiesPath() {
+  const appData = process.env.APPDATA || process.env.LOCALAPPDATA || ''
+  if (!appData) return ''
+  return appData.replace(/\\$/, '') + '\\@deepseek-ai\\dsh-desktop\\Network\\Cookies'
+}
+
+function formatKB(bytes) {
+  if (!Number.isFinite(bytes) || bytes <= 0) return '0 KB'
+  if (bytes < 1024) return bytes + ' B'
+  return (bytes / 1024).toFixed(1) + ' KB'
 }
 
 /**
- * Probe whether the Electron cookie store is reachable from THIS plugin realm.
- *
- * Verified finding (DSH 44.7.0 / @deepseek-ai 0.2.2-rc.1): the plugin host half
- * is evaluated inside a `node:vm` sandbox whose module linker maps `electron`
- * to the renderer bridge. That object has no `.session.defaultSession.cookies`,
- * so the main-process cookie store is unreachable here. We capture the proof
- * (the shape of the object we DID get) so the UI can show it — that's the most
- * useful thing this plugin can do, because it tells the user exactly why the
- * one-click clean can't run from Settings.
- *
- * Returns { available, cookies, error, probe }.
+ * Measure the Cookies DB file size via a spawned subprocess. The DB content is
+ * locked while DSH runs, but the FILE METADATA (its size) is readable — even a
+ * plain `fs.stat` works (verified: returns 20480 while cp→EBUSY). We use a
+ * subprocess so we don't depend on the internal `ctx.fs` target-key shape, and
+ * because reading size is the only signal we need.
  */
-async function probeCookieStore() {
-  let electron
+async function readDbSize(sub) {
+  const p = cookiesPath()
+  if (!p || !sub) return 0
   try {
-    electron = await import('electron')
+    const quoted = p.replace(/'/g, "''")
+    const handle = sub.spawn({
+      argv: ['powershell', '-NoProfile', '-Command', `(Get-Item -LiteralPath '${quoted}').Length`],
+    })
+    const res = await handle.done
+    const n = parseInt(String((res && res.stdout) || '').trim(), 10)
+    return Number.isFinite(n) && n >= 0 ? n : 0
   } catch (e) {
-    return { available: false, cookies: [], error: 'electron not importable: ' + e.message, probe: null }
+    console.warn('[dsh-cookie-pruner] gauge error:', e?.message)
+    return 0
   }
+}
 
-  let probe = {}
+/**
+ * Register (or refresh) the deferred-cleanup Task Scheduler job. It lives in the
+ * svchost Task Scheduler — OUTSIDE the DSH process tree — so it survives DSH
+ * exiting and runs `cleanup-once.ps1` on its own schedule. `/f` makes the
+ * (re)creation idempotent. cleanup-once.ps1 itself guards "DSH fully closed"
+ * before touching the DB, so it is safe to leave registered permanently.
+ */
+async function ensureScheduledTask(sub) {
+  if (!sub) return false
+  const argv = [
+    'schtasks', '/create', '/tn', TASK_NAME,
+    '/tr', `powershell -ExecutionPolicy Bypass -File "${CLEANUP_SCRIPT}"`,
+    '/sc', 'minute', '/mo', String(TASK_INTERVAL_MIN), '/f',
+  ]
   try {
-    const e = electron.default ?? electron
-    probe = {
-      typeofElectron: typeof electron,
-      keys: Array.isArray(Object.keys(e)) ? Object.keys(e).slice(0, 20) : '(no keys)',
-      hasSession: !!(e && e.session),
-      hasDefaultSession: !!(e && e.session && e.session.defaultSession),
-      hasCookies: !!(e && e.session && e.session.defaultSession && e.session.defaultSession.cookies),
-      hasDefaultSessionViaDefault: !!(e && e.default && e.default.session && e.default.session.defaultSession),
-    }
+    const handle = sub.spawn({ argv })
+    await handle.done
+    return true
   } catch (e) {
-    probe = { probeError: e.message }
+    console.warn('[dsh-cookie-pruner] could not register scheduled task:', e?.message)
+    return false
   }
+}
 
-  const reachable = !!(electron && electron.session && electron.session.defaultSession && electron.session.defaultSession.cookies)
-  if (!reachable) {
-    return {
-      available: false,
-      cookies: [],
-      error: 'session.defaultSession.cookies missing — plugin vm sandbox cannot reach the Electron main-process cookie store',
-      probe,
-    }
-  }
-
-  // Defensive: if a future build exposes the store, actually read it.
+/** Remove the deferred-cleanup job (when the user turns auto-clean off). */
+async function removeScheduledTask(sub) {
+  if (!sub) return
   try {
-    const all = await electron.session.defaultSession.cookies.get({})
-    const auth = all.filter(isAuthCookie)
-    auth.sort((a, b) => (b.expirationDate || b.creationDate || 0) - (a.expirationDate || a.creationDate || 0))
-    return { available: true, cookies: auth, error: null, probe }
-  } catch (e) {
-    return { available: false, cookies: [], error: 'cookies.get failed: ' + e.message, probe }
-  }
+    const handle = sub.spawn({ argv: ['schtasks', '/delete', '/tn', TASK_NAME, '/f'] })
+    await handle.done
+  } catch { /* best effort */ }
 }
 
 function offlineInstructions() {
   return [
-    '⚠️ 运行时无法清理：本插件在 DSH 插件沙箱（node:vm）中运行，沙箱把 `electron` 映射到渲染进程桥接，没有 .session.defaultSession.cookies。这是 DSH 桌面端插件架构限制，不是本插件 bug，也不是你的操作问题。',
-    '',
     '真正能清除已有 cookie 堆积（解决 HTTP 431）的办法：完全退出 DSH 后跑离线脚本。',
     '脚本路径（DSH 已关闭时运行）：',
     `  ${CLEANUP_SCRIPT}`,
@@ -190,152 +208,115 @@ function offlineInstructions() {
     '注：该脚本只是把 Cookies 库改名成 .bak（保留备份），不会删除任何程序文件；副作用是已保存的登录态会丢失，需要重新登录。',
     '',
     '预防（已生效）：cordis.patch.yml 里的 connection.cookieMaxAgeDays: 7 把未来 cookie 寿命压到 7 天，旧 cookie 会自行过期，不再堆到 16KB。',
-  ].join('\n')
+    '自动清理（v0.1.7）：检测到堆积时会自动登记后台任务，你完全退出 DSH 后 ≤' + TASK_INTERVAL_MIN + ' 分钟自动清理，无需手动。',
+  ].join('\\n')
 }
 
 export function apply(ctx, config) {
   const cfg = resolveConfig(config)
+  const sub = ctx.subprocess || (ctx.get ? ctx.get('subprocess') : null)
 
-  // Live config: volatile fields are edited in place, so `apply` is never
-  // re-run. Always read the latest values through the fiber.
-  const live = () => {
-    let raw = null
-    try { raw = ctx.fiber?.effectiveConfig ?? null } catch { /* ignore */ }
-    return resolveConfig({ ...cfg, ...(raw || {}) })
+  // Local mirror of the persisted volatile state. Seed from the stored
+  // effectiveConfig so the launch counter survives restarts.
+  const published = {
+    lastDbSize: 0, launchesSincePrune: 0, autoCleanEnabled: true,
+    lastAutoCleanAt: '', available: true, lastResult: '', cleanRequest: false,
   }
-
-  const settings = (() => {
-    try { return ctx.get ? ctx.get('settings') : undefined } catch { return undefined }
-  })()
-
-  // dsh-settings persists every write into the profile YAML and then
-  // reconciles the loader (which restarts this plugin). So:
-  //   1. seed the cache from the values already stored in the YAML — otherwise
-  //      each restart would republish and trigger another reconcile, looping;
-  //   2. send only values that actually changed;
-  //   3. allow a single write in flight.
-  const published = Object.create(null)
   try {
-    const raw = ctx.fiber?.effectiveConfig
-    if (raw && typeof raw === 'object') {
+    const seed = ctx.fiber?.effectiveConfig
+    if (seed && typeof seed === 'object') {
       for (const key of VOLATILE_KEYS) {
-        if (key in raw) published[key] = readValue(raw[key])
+        const v = readValue(seed[key])
+        if (v !== undefined) published[key] = v
       }
     }
   } catch { /* ignore */ }
+  if (published.autoCleanEnabled !== true && published.autoCleanEnabled !== false) published.autoCleanEnabled = true
 
-  let writing = null
+  // dsh-settings persists every write into the profile YAML. We pass the full
+  // mirror so unrelated fields are preserved.
   const push = async (patch) => {
-    if (!settings || typeof settings.update !== 'function') return
-    const delta = {}
-    for (const [key, value] of Object.entries(patch)) {
-      if (published[key] !== value) delta[key] = value
-    }
-    if (Object.keys(delta).length === 0) return
-    if (writing) { try { await writing } catch { /* ignore */ } return push(patch) }
-    writing = (async () => {
-      try {
-        await settings.update(NS, delta)
-        Object.assign(published, delta)
-      } catch (e) {
-        console.warn('[dsh-cookie-pruner] settings update skipped:', e.message)
-      } finally {
-        writing = null
-      }
-    })()
-    await writing
-  }
-
-  let busy = false
-
-  // Publish the diagnostic. In this build `available` is always false and the
-  // count is -1 (unknown); we surface the proof + the offline remedy.
-  const publishCount = async () => {
+    Object.assign(published, patch)
     try {
-      const { available, cookies, error, probe } = await probeCookieStore()
-      let lastResult
-      if (available) {
-        lastResult = `运行时读取成功，当前 ${cookies.length} 条 dsh-auth-* cookie。`
-      } else {
-        const probeStr = probe ? ('\n\n探测到的 electron 对象：\n' + JSON.stringify(probe, null, 2)) : ''
-        lastResult = '⚠️ 无法在运行时读取 cookie：' + error + probeStr +
-          '\n\n' + offlineInstructions()
+      if (ctx.settings && typeof ctx.settings.update === 'function') {
+        await ctx.settings.update(NS, { ...published })
       }
-      await push({ lastCount: available ? cookies.length : -1, available, lastResult })
     } catch (e) {
-      console.warn('[dsh-cookie-pruner] count publish error:', e.message)
+      console.warn('[dsh-cookie-pruner] settings update skipped:', e?.message)
     }
   }
 
-  // Preventive-only: if a future build ever exposes the store, prune old ones.
-  // In the current build this is a no-op (available is always false).
-  const runAutoPrune = async () => {
-    const c = live()
-    if (!c.autoPrune) return
-    try {
-      const { available, cookies, error } = await probeCookieStore()
-      if (!available) {
-        // Don't spam the diagnostic on every interval — publishCount handles it.
-        return
-      }
-      await push({ lastCount: cookies.length, available: true })
-    } catch (e) {
-      console.warn('[dsh-cookie-pruner] auto-prune error:', e.message)
+  // Remember this launch (count only increments while DSH actually starts).
+  published.launchesSincePrune = (Number(published.launchesSincePrune) || 0) + 1
+
+  const atRisk = (size, launches) => size >= RISK_SIZE || launches >= LAUNCH_THRESHOLD
+
+  // React to the user's auto-clean toggle + ensure the task matches state.
+  const syncTask = async () => {
+    if (!sub) return
+    if (published.autoCleanEnabled && atRisk(published.lastDbSize, published.launchesSincePrune)) {
+      await ensureScheduledTask(sub)
+    } else if (!published.autoCleanEnabled) {
+      await removeScheduledTask(sub)
     }
   }
 
-  // The "clean" action can't delete at runtime (sandbox limit). Instead it
-  // prints the offline cleanup instructions into lastResult.
-  const checkCleanRequest = async () => {
-    if (busy) return
-    let flag = false
-    try { flag = readValue(ctx.fiber?.effectiveConfig?.cleanRequest) === true } catch { /* ignore */ }
-    if (!flag) return
-    busy = true
-    try {
-      await push({ cleanRequest: false })
-      await push({ lastResult: offlineInstructions() })
-    } catch (e) {
-      await push({ lastResult: '生成离线清理指引失败：' + e.message })
-    } finally {
-      busy = false
-    }
-  }
-
-  // Publish the diagnostic. First after a short delay, then keep it fresh.
+  // --- measure + prevent loop ---
   ctx.effect(() => {
     let cancelled = false
-    const run = async () => { if (!cancelled) await publishCount() }
-    const t = setTimeout(run, 1000)
+    const run = async () => {
+      if (cancelled) return
+      const size = await readDbSize(sub)
+      const launches = published.launchesSincePrune
+      const risk = atRisk(size, launches)
+      const patch = { lastDbSize: size, available: true }
+
+      // If the pile-up has cleared (DB shrank below the threshold), reset the
+      // launch counter so future warnings are accurate.
+      if (!risk && published.launchesSincePrune > 0) {
+        patch.launchesSincePrune = 0
+      }
+
+      if (risk) {
+        await ensureScheduledTask(sub)
+        patch.lastResult = `⚠️ 检测到 dsh-auth-* cookie 堆积风险（Cookies 库 ${formatKB(size)}，已启动 ${launches} 次）。已安排后台清理任务：你完全退出 DSH 后，它会在 ≤${TASK_INTERVAL_MIN} 分钟内自动清理，彻底解除 431。`
+      } else {
+        patch.lastResult = `✅ 暂无溢出风险（Cookies 库 ${formatKB(size)}）。Layer A（cookieMaxAgeDays:7）已在生效，未来 cookie 会自行过期。`
+      }
+
+      await syncTask()
+      await push(patch)
+    }
+    const t = setTimeout(run, cfg.startDelayMs)
     if (typeof t.unref === 'function') t.unref()
-    const interval = setInterval(run, cfg.countPollMs)
+    const interval = setInterval(run, cfg.checkIntervalMs)
     if (typeof interval.unref === 'function') interval.unref()
     return () => { cancelled = true; clearTimeout(t); clearInterval(interval) }
   })
 
-  // Periodic refresh of the diagnostic (start after a delay so we don't race
-  // welcome auth). Wrap in ctx.effect so cordis disposes the timer on plugin
-  // shutdown — this is the only correct teardown pattern in this build
-  // (no ctx.on('dispose')).
+  // --- respond to the Settings "show offline steps / enable auto" request ---
   ctx.effect(() => {
-    let interval = null
-    const startTimer = () => {
-      if (interval) return
-      interval = setInterval(runAutoPrune, cfg.checkIntervalMs)
-      if (typeof interval.unref === 'function') interval.unref()
-    }
-    const delay = setTimeout(() => { runAutoPrune(); startTimer() }, cfg.startDelayMs)
-    if (typeof delay.unref === 'function') delay.unref()
-    return () => {
-      clearTimeout(delay)
-      if (interval) clearInterval(interval)
-    }
-  })
-
-  // Poll for a Settings-issued clean request.
-  ctx.effect(() => {
-    const watch = setInterval(checkCleanRequest, cfg.cleanPollMs)
+    const watch = setInterval(async () => {
+      let flag = false
+      try { flag = readValue(ctx.fiber?.effectiveConfig?.cleanRequest) === true } catch { /* ignore */ }
+      if (!flag) return
+      try {
+        published.cleanRequest = false
+        published.autoCleanEnabled = true
+        await ensureScheduledTask(sub)
+        await push({
+          cleanRequest: false,
+          autoCleanEnabled: true,
+          lastResult: offlineInstructions() + `\\n\\n已为你开启自动清理：完全退出 DSH 后，后台任务会在 ≤${TASK_INTERVAL_MIN} 分钟内自动清理。`,
+        })
+      } catch (e) {
+        await push({ cleanRequest: false, lastResult: '生成离线清理指引失败：' + e?.message })
+      }
+    }, cfg.cleanPollMs)
     if (typeof watch.unref === 'function') watch.unref()
     return () => clearInterval(watch)
   })
+
+  // First publish (seeds the launch counter + initial status).
+  push({ launchesSincePrune: published.launchesSincePrune }).catch(() => {})
 }

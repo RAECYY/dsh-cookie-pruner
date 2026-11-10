@@ -1,6 +1,6 @@
 {
   "name": "dsh-cookie-pruner",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "type": "module",
   "main": "index.js",
   "exports": {
@@ -8,7 +8,7 @@
     "./client": "./client.js",
     "./package.json": "./package.json"
   },
-  "description": "DSH 桌面端 dsh-auth-* cookie 累积（HTTP 431 / Web authentication failed 启动崩溃）缓解插件。在左下角「账户 → 设置」里新增一个诚实的「Cookie 清理」分区：说明插件沙箱无法直接读/删 cookie 的架构限制、展示探测证明，并给出离线 cleanup-once.ps1 路径与步骤（真正解除 431）。Layer A（cookieMaxAgeDays:7）已在生效，防止未来 cookie 堆积。 / Honest DSH desktop dsh-auth-* cookie pile-up (HTTP 431) mitigation: a \"Cookie 清理\" section in the bottom-left account → Settings dialog that explains the plugin-sandbox limitation, shows the proof, and points to the offline cleanup-once.ps1 that actually fixes 431. Layer A (cookieMaxAgeDays:7) prevents future pile-up.",
+  "description": "DSH 桌面端 dsh-auth-* cookie 累积（HTTP 431 / Web authentication failed 启动崩溃） prevention 插件。v0.1.7 新增自动检测 + 退出后自动清理：周期性读 Cookies 库大小（沙箱内文件大小可读），检测到堆积时自动登记 Windows 计划任务，在你完全退出 DSH 后 ≤10 分钟自动运行 cleanup-once.ps1，无需手动。同时提供「账户 → 设置 → Cookie 清理」分区展示实时状态与离线步骤。Layer A（cookieMaxAgeDays:7）已在生效，防止未来 cookie 堆积。 / DSH desktop dsh-auth-* cookie pile-up (HTTP 431) prevention: auto-detect via DB size + deferred auto-cleanup through a Task Scheduler job that runs after DSH fully exits. No runtime deletion (sandbox + locked DB), but genuine prevention without manual steps.",
   "keywords": [
     "dsh",
     "deepseek-harness",
