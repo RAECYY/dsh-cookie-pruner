@@ -1,5 +1,5 @@
 /**
- * dsh-cookie-pruner — Host half, v0.1.7
+ * dsh-cookie-pruner — Host half, v0.1.9
  *
  * Mitigates the DSH desktop bug where `dsh-auth-*` cookies accumulate one per
  * launch (each desktop host uses a new random port, so the cookie name differs
@@ -64,12 +64,12 @@ const DEFAULT_CONFIG = {
 // node_modules this resolution fails. We must NOT let that break plugin load
 // (it would break DSH startup), so the form is simply omitted and the pruner
 // still runs headless.
-// Loaded only via `createRequire` (synchronous). NOTE: a top-level `await
-// import(...)` must NOT be used here — the plugin host bundles this module with
-// esbuild in `iife`/`cjs` mode, which rejects top-level await at build time and
-// silently drops the entire Host half (the client half still renders, leaving
-// the panel stuck on "插件尚未就绪"). The synchronous `createRequire` below
-// resolves schemastery from the plugin's own node_modules and never trips that.
+// Loaded only via `createRequire` (synchronous) for simplicity; a top-level
+// `await import(...)` is also tolerated by the host (it wraps host code in an
+// async IIFE), but the synchronous path is simplest and never trips it. The
+// real regression between v0.1.6 and v0.1.7 was that `push()` read
+// `ctx.settings` (undefined in the vm sandbox) instead of `ctx.get('settings')`,
+// so the Host half silently published nothing — now fixed at the push site.
 let z = null
 try {
   z = createRequire(import.meta.url)('@deepseek-ai/schemastery')
@@ -215,7 +215,7 @@ function offlineInstructions() {
 
 export function apply(ctx, config) {
   const cfg = resolveConfig(config)
-  const sub = ctx.subprocess || (ctx.get ? ctx.get('subprocess') : null)
+  const sub = ctx.get ? ctx.get('subprocess') : (ctx.subprocess || null)
 
   // Local mirror of the persisted volatile state. Seed from the stored
   // effectiveConfig so the launch counter survives restarts.
@@ -236,11 +236,16 @@ export function apply(ctx, config) {
 
   // dsh-settings persists every write into the profile YAML. We pass the full
   // mirror so unrelated fields are preserved.
+  // Host `ctx` exposes services ONLY through `ctx.get('x')` (the cordis
+  // registry); a plain `ctx.settings` property is undefined in the vm sandbox.
+  // Resolve defensively so the first publish always lands, and also accept a
+  // direct property if some future host mirrors the service there.
+  const settings = ctx.get ? ctx.get('settings') : (ctx.settings || undefined)
   const push = async (patch) => {
     Object.assign(published, patch)
     try {
-      if (ctx.settings && typeof ctx.settings.update === 'function') {
-        await ctx.settings.update(NS, { ...published })
+      if (settings && typeof settings.update === 'function') {
+        await settings.update(NS, { ...published })
       }
     } catch (e) {
       console.warn('[dsh-cookie-pruner] settings update skipped:', e?.message)
