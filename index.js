@@ -64,17 +64,18 @@ const DEFAULT_CONFIG = {
 // node_modules this resolution fails. We must NOT let that break plugin load
 // (it would break DSH startup), so the form is simply omitted and the pruner
 // still runs headless.
+// Loaded only via `createRequire` (synchronous). NOTE: a top-level `await
+// import(...)` must NOT be used here — the plugin host bundles this module with
+// esbuild in `iife`/`cjs` mode, which rejects top-level await at build time and
+// silently drops the entire Host half (the client half still renders, leaving
+// the panel stuck on "插件尚未就绪"). The synchronous `createRequire` below
+// resolves schemastery from the plugin's own node_modules and never trips that.
 let z = null
 try {
   z = createRequire(import.meta.url)('@deepseek-ai/schemastery')
   z = z?.default ?? z
 } catch (e1) {
-  try {
-    const mod = await import('@deepseek-ai/schemastery')
-    z = mod.default ?? mod
-  } catch (e2) {
-    console.warn('[dsh-cookie-pruner] schemastery unavailable — Settings form disabled:', e2?.message || e1?.message)
-  }
+  console.warn('[dsh-cookie-pruner] schemastery unavailable — Settings form disabled:', e1?.message)
 }
 
 /**

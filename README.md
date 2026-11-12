@@ -1,6 +1,6 @@
-# dsh-cookie-pruner v0.1.7
+# dsh-cookie-pruner v0.1.8
 
-![version](https://img.shields.io/badge/version-v0.1.7-blue) ![license](https://img.shields.io/badge/license-MIT-green) ![platform](https://img.shields.io/badge/platform-DSH%20desktop-orange)
+![version](https://img.shields.io/badge/version-v0.1.8-blue) ![license](https://img.shields.io/badge/license-MIT-green) ![platform](https://img.shields.io/badge/platform-DSH%20desktop-orange)
 
 ---
 
@@ -97,6 +97,10 @@
 > **中文（v0.1.5 → v0.1.6 的更正）：** v0.1.5 以为"显示零个"是启动早期 cookie 库未就绪的时序竞态，于是加了 `cookies.ready` 等待 + 重试 + 15 秒周期发布。但这个假设是**错的**——用户机器上重启后仍显示 0，说明不是时序问题。真正的根因是插件沙箱拿不到 `session.defaultSession.cookies`（架构限制）。v0.1.6 不再假装能读/删，改为诚实展示探测证明 + 离线解法；v0.1.7 在诚实地基上追加了"运行时检测 + 退出后自动清理"。
 >
 > **English (v0.1.5 → v0.1.6 correction):** v0.1.5 assumed the "shows zero" was a startup timing race (cookie store not ready), so it added `cookies.ready` wait + retry + 15 s periodic publish. That assumption was **wrong** — the user still saw 0 after restart, proving it wasn't a timing issue. The real root cause is the plugin sandbox cannot reach `session.defaultSession.cookies` (an architecture limit). v0.1.6 stops pretending to read/delete and instead shows the proof + the offline fix honestly; v0.1.7 builds on that honesty by adding "detect at runtime + auto-clean after quit".
+
+> **中文（v0.1.7 → v0.1.8 的更正）：** v0.1.7 在 `index.js` 顶部用了 `await import('@deepseek-ai/schemastery')`（顶层 await）。DSH 的插件宿主用 esbuild 把 Host 半边打包成 `iife`/`cjs`，**顶层 await 在打包阶段就被拒绝**，导致整个 Host 半边根本没注册——于是面板能渲染（client 半边没有顶层 await），但永远显示「插件尚未就绪」和默认值（0 KB / 0 次）。v0.1.8 改用同步的 `createRequire` 加载 schemastery（从插件自带 node_modules 解析），去掉了顶层 await，Host 半边恢复正常。
+
+> **English (v0.1.7 → v0.1.8 correction):** v0.1.7 used a top-level `await import('@deepseek-ai/schemastery')` at the top of `index.js`. The DSH plugin host bundles the Host half with esbuild in `iife`/`cjs` mode, which **rejects top-level await at bundle time**, so the entire Host half was never registered — the panel still rendered (the client half has no top-level await) but always showed "插件尚未就绪" and default values (0 KB / 0 launches). v0.1.8 loads schemastery synchronously via `createRequire` (resolved from the plugin's own node_modules), removing the top-level await so the Host half works again.
 
 ## 可调参数 / Configurable parameters (edit `DEFAULT_CONFIG` / the constants at the top of `index.js`)
 

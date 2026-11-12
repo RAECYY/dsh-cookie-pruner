@@ -1,6 +1,6 @@
 {
   "name": "dsh-cookie-pruner",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "type": "module",
   "main": "index.js",
   "exports": {
@@ -8,7 +8,7 @@
     "./client": "./client.js",
     "./package.json": "./package.json"
   },
-  "description": "DSH 桌面端 dsh-auth-* cookie 累积（HTTP 431 / Web authentication failed 启动崩溃） prevention 插件。v0.1.7 新增自动检测 + 退出后自动清理：周期性读 Cookies 库大小（沙箱内文件大小可读），检测到堆积时自动登记 Windows 计划任务，在你完全退出 DSH 后 ≤10 分钟自动运行 cleanup-once.ps1，无需手动。同时提供「账户 → 设置 → Cookie 清理」分区展示实时状态与离线步骤。Layer A（cookieMaxAgeDays:7）已在生效，防止未来 cookie 堆积。 / DSH desktop dsh-auth-* cookie pile-up (HTTP 431) prevention: auto-detect via DB size + deferred auto-cleanup through a Task Scheduler job that runs after DSH fully exits. No runtime deletion (sandbox + locked DB), but genuine prevention without manual steps.",
+  "description": "DSH 桌面端 dsh-auth-* cookie 累积（HTTP 431 / Web authentication failed 启动崩溃） prevention 插件。v0.1.8 修复了 v0.1.7 引入的回归：顶层 await 导致 Host 半边打包失败。自动检测 + 退出后自动清理：周期性读 Cookies 库大小，检测到堆积时自动登记 Windows 计划任务，在你完全退出 DSH 后 ≤10 分钟自动运行 cleanup-once.ps1。同时提供「账户 → 设置 → Cookie 清理」分区。Layer A（cookieMaxAgeDays:7）已在生效。 / DSH desktop dsh-auth-* cookie pile-up (HTTP 431) prevention. v0.1.8 fixes the v0.1.7 regression where a top-level await broke the Host half bundle. Auto-detect via DB size + deferred auto-cleanup through a Task Scheduler job after DSH fully exits. No runtime deletion (sandbox + locked DB), genuine prevention without manual steps.",
   "keywords": [
     "dsh",
     "deepseek-harness",
