@@ -1,6 +1,6 @@
-# dsh-cookie-pruner v0.1.9
+# dsh-cookie-pruner v0.1.10
 
-![version](https://img.shields.io/badge/version-v0.1.9-blue) ![license](https://img.shields.io/badge/license-MIT-green) ![platform](https://img.shields.io/badge/platform-DSH%20desktop-orange)
+![version](https://img.shields.io/badge/version-v0.1.10-blue) ![license](https://img.shields.io/badge/license-MIT-green) ![platform](https://img.shields.io/badge/platform-DSH%20desktop-orange)
 
 ---
 
@@ -105,6 +105,16 @@
 > **中文（v0.1.8 → v0.1.9 的更正，真正的修复）：** v0.1.8 装上去后仍然「插件尚未就绪、0 KB / 0 次」。**真因不是顶层 await**——v0.1.4 同样有顶部 `node:module` import + 顶层 await，面板却正常。真正的问题是 `push()` 里写成 `if (ctx.settings && ...)`：在 `node:vm` 沙箱里，插件服务**只**通过 `ctx.get('x')` 暴露，`ctx.settings` 这个直接属性是 `undefined`，于是发布逻辑静默跳过、`settings.update` 从未被调用，面板永远拿不到数据。v0.1.9 改为 `const settings = ctx.get ? ctx.get('settings') : (ctx.settings || undefined)`，并对 `subprocess` 同样走 `ctx.get('subprocess')`——首条数据必定落地。重新完整重启 DSH 后即可看到真实的库大小与风险徽章。
 
 > **English (v0.1.8 → v0.1.9 correction — the real fix):** v0.1.8 still showed "插件尚未就绪" with 0 KB / 0 launches. The cause was **not** top-level await — v0.1.4 had the same top-of-file `node:module` import plus a top-level await and its panel worked fine. The real bug was in `push()`: it tested `if (ctx.settings && ...)`. Inside the `node:vm` sandbox, plugin services are exposed **only** via `ctx.get('x')`; the direct `ctx.settings` property is `undefined`, so the publish logic silently no-op'd and `settings.update` was never called — the panel never received data. v0.1.9 uses `const settings = ctx.get ? ctx.get('settings') : (ctx.settings || undefined)` and applies the same `ctx.get('subprocess')` pattern, so the first publish always lands. After a full DSH restart you'll see the real DB size and risk badge.
+
+> **中文（v0.1.9 → v0.1.10 的更正，沙箱两处硬限制）：** v0.1.9 装上去后，面板「活」了（不再显示「插件尚未就绪」），但仍显示 `0 KB`、`安全`。两个根因都在 DSH 的 `node:vm` 沙箱里，已对照 `dsh-cordis-host-runner` 源码确认：
+> 1. **`process` 在沙箱里是 `undefined`。** v0.1.9 的 `cookiesPath()` 写了 `process.env.APPDATA || process.env.LOCALAPPDATA`，会抛 `ReferenceError` → 路径返回空 → 测出来的库大小恒为 0，风险徽章永远绿。v0.1.10 改用子进程探测 `$env:APPDATA`（与测大小时的 `powershell` 用的是同一条路），不再碰 `process`。
+> 2. **裸 `setTimeout` / `setInterval` 被沙箱拦截。** `hostrunner` 的 `NODE_API_REDIRECTS` 把裸定时器映射成抛 `TIMER_REDIRECT`；且只有在插件声明 `inject: ['timer']` 后，宿主门面才放行 `ctx.timeout` / `ctx.interval`。v0.1.9 的几处裸定时器在函数体里直接抛错，导致「检测循环」和「清理请求轮询」从未真正跑起来——只有同步首推落地。v0.1.10 改为 `ctx.timeout` / `ctx.interval`，并新增 `export const inject = ['timer']`，定时器句柄在 `ctx.effect` 清理时 `dispose()`。
+> 已用模拟沙箱的宿主测试证实：v0.1.10 能拿到真实的 `20480` 字节（不再是 0）、能注册 3 个计时器、风险徽章正确变红并登记计划任务。完整重启 DSH 后生效。
+
+> **English (v0.1.9 → v0.1.10 correction — two sandbox hard-limits):** v0.1.9 made the panel "alive" (no more "插件尚未就绪") but it still showed `0 KB` and "safe". Both root causes live in DSH's `node:vm` sandbox, confirmed against the `dsh-cordis-host-runner` source:
+> 1. **`process` is `undefined` in the sandbox.** v0.1.9's `cookiesPath()` read `process.env.APPDATA || process.env.LOCALAPPDATA`, which threw `ReferenceError` → empty path → DB size always measured as 0, risk badge always green. v0.1.10 resolves `APPDATA` via a subprocess probe (`$env:APPDATA` — the same channel used to read the DB size) and never touches `process`.
+> 2. **Bare `setTimeout` / `setInterval` are trapped by the sandbox.** `hostrunner`'s `NODE_API_REDIRECTS` maps bare timers to a thrown `TIMER_REDIRECT`, and the host façade only permits `ctx.timeout` / `ctx.interval` after the plugin declares `inject: ['timer']`. v0.1.9's bare timers threw inside the effect bodies, so the "measure loop" and "clean-request poll" never actually ran — only the synchronous first publish landed. v0.1.10 uses `ctx.timeout` / `ctx.interval` and adds `export const inject = ['timer']`; timer handles are `dispose()`'d in the `ctx.effect` cleanup.
+> A sandbox-simulating host test confirms v0.1.10 reads the real `20480` bytes (not 0), registers 3 timers, and correctly flips the risk badge red + registers the scheduled task. Takes effect after a full DSH restart.
 
 ## 可调参数 / Configurable parameters (edit `DEFAULT_CONFIG` / the constants at the top of `index.js`)
 

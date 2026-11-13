@@ -1,6 +1,6 @@
 {
   "name": "dsh-cookie-pruner",
-  "version": "0.1.9",
+  "version": "0.1.10",
   "type": "module",
   "main": "index.js",
   "exports": {
@@ -8,7 +8,7 @@
     "./client": "./client.js",
     "./package.json": "./package.json"
   },
-  "description": "DSH 桌面端 dsh-auth-* cookie 累积（HTTP 431 / Web authentication failed 启动崩溃） prevention 插件。v0.1.9 修复了 v0.1.7/v0.1.8 的真正回归：push() 直接读取 ctx.settings（vm 沙箱里为 undefined）导致 Host 半边从未发布数据、面板一直「插件尚未就绪」；改为 ctx.get('settings') 后首条数据必定落地。自动检测 + 退出后自动清理：周期性读 Cookies 库大小，检测到堆积时自动登记 Windows 计划任务，在你完全退出 DSH 后 ≤10 分钟自动运行 cleanup-once.ps1。同时提供「账户 → 设置 → Cookie 清理」分区。Layer A（cookieMaxAgeDays:7）已在生效。 / DSH desktop dsh-auth-* cookie pile-up (HTTP 431) prevention. v0.1.9 fixes the real v0.1.7/v0.1.8 regression: push() read ctx.settings (undefined in the vm sandbox) so the Host half never published and the panel was stuck on '插件尚未就绪'; switching to ctx.get('settings') makes the first publish land. Auto-detect via DB size + deferred auto-cleanup through a Task Scheduler job after DSH fully exits. No runtime deletion (sandbox + locked DB), genuine prevention without manual steps.",
+  "description": "DSH 桌面端 dsh-auth-* cookie 累积（HTTP 431 / Web authentication failed 启动崩溃） prevention 插件。v0.1.9 修复了 v0.1.7/v0.1.8 的真正回归：push() 直接读取 ctx.settings（vm 沙箱里为 undefined）导致 Host 半边从未发布数据、面板一直「插件尚未就绪」；改为 ctx.get('settings') 后首条数据必定落地。v0.1.10 进一步修复沙箱两处硬限制：`process` 在沙箱里为 undefined（改用子进程探测 $env:APPDATA），裸 setTimeout/setInterval 被拦截（改用 ctx.timeout/ctx.interval 并声明 inject:['timer']）。自动检测 + 退出后自动清理：周期性读 Cookies 库大小，检测到堆积时自动登记 Windows 计划任务，在你完全退出 DSH 后 ≤10 分钟自动运行 cleanup-once.ps1。同时提供「账户 → 设置 → Cookie 清理」分区。Layer A（cookieMaxAgeDays:7）已在生效。 / DSH desktop dsh-auth-* cookie pile-up (HTTP 431) prevention. v0.1.9 fixes the real v0.1.7/v0.1.8 regression (push() read ctx.settings, undefined in the vm sandbox). v0.1.10 fixes two sandbox hard-limits: process is undefined (resolve APPDATA via subprocess probe) and bare setTimeout/setInterval are trapped (use ctx.timeout/ctx.interval + inject:['timer']). Auto-detect via DB size + deferred auto-cleanup through a Task Scheduler job after DSH fully exits. No runtime deletion (sandbox + locked DB), genuine prevention without manual steps.",
   "keywords": [
     "dsh",
     "deepseek-harness",

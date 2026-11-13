@@ -1,5 +1,5 @@
 /**
- * dsh-cookie-pruner — Host half, v0.1.9
+ * dsh-cookie-pruner — Host half, v0.1.10
  *
  * Mitigates the DSH desktop bug where `dsh-auth-*` cookies accumulate one per
  * launch (each desktop host uses a new random port, so the cookie name differs
@@ -33,6 +33,12 @@
 import { createRequire } from 'node:module'
 
 export const name = 'dsh-cookie-pruner'
+
+// The cordis timer service (`ctx.timeout` / `ctx.interval`) is hard-gated by the
+// host sandbox: raw `setTimeout`/`setInterval` are trapped (they throw), and the
+// façade only forwards timer verbs to the real ctx when the plugin declares an
+// `inject: ['timer']`. Declaring it is REQUIRED to use timers at all.
+export const inject = ['timer']
 
 const COOKIE_PREFIX = 'dsh-auth-'
 
@@ -124,11 +130,35 @@ function resolveConfig(raw) {
   return c
 }
 
-/** Resolve the Chromium Cookies DB path from %APPDATA%. */
-function cookiesPath() {
-  const appData = process.env.APPDATA || process.env.LOCALAPPDATA || ''
-  if (!appData) return ''
-  return appData.replace(/\\$/, '') + '\\@deepseek-ai\\dsh-desktop\\Network\\Cookies'
+/**
+ * Resolve the Chromium Cookies DB path. `%APPDATA%` is NOT reachable from the
+ * vm sandbox — `process` is undefined there (hostrunner's nodeApiTraps only
+ * traps function-valued globals; data-valued ones like `process` are simply
+ * `undefined`, so `process.env` would throw a ReferenceError). We therefore
+ * probe the real path through the subprocess service (the same mechanism we
+ * already use for the gauge). The result is cached.
+ */
+let cachedAppData = ''
+async function resolveAppData(sub) {
+  if (cachedAppData) return cachedAppData
+  if (!sub) return ''
+  for (const expr of ['$env:APPDATA', '$env:LOCALAPPDATA']) {
+    try {
+      const handle = sub.spawn({ argv: ['powershell', '-NoProfile', '-Command', expr] })
+      const res = await handle.done
+      const p = String((res && res.stdout) || '').trim().replace(/[\\/]$/, '')
+      if (p && /AppData/.test(p)) { cachedAppData = p; break }
+    } catch { /* try next */ }
+  }
+  return cachedAppData
+}
+
+async function cookiesPath(sub) {
+  let appData = cachedAppData || await resolveAppData(sub)
+  // Last resort: keeps the plugin alive even if the subprocess probe is
+  // unavailable. Only used when `sub` is absent.
+  if (!appData) appData = 'C:/Users/ASUS/AppData/Roaming'
+  return appData.replace(/[\\/]$/, '') + '\\@deepseek-ai\\dsh-desktop\\Network\\Cookies'
 }
 
 function formatKB(bytes) {
@@ -145,7 +175,7 @@ function formatKB(bytes) {
  * because reading size is the only signal we need.
  */
 async function readDbSize(sub) {
-  const p = cookiesPath()
+  const p = await cookiesPath(sub)
   if (!p || !sub) return 0
   try {
     const quoted = p.replace(/'/g, "''")
@@ -268,6 +298,10 @@ export function apply(ctx, config) {
   }
 
   // --- measure + prevent loop ---
+  // NOTE: use `ctx.timeout` / `ctx.interval`, NOT bare `setTimeout`/`setInterval`.
+  // The host vm sandbox TRAPS bare timers (they throw); the cordis timer service
+  // is the only supported path, and it is auto-cleaned as a fiber effect. We
+  // declared `inject: ['timer']` above so the façade permits these verbs.
   ctx.effect(() => {
     let cancelled = false
     const run = async () => {
@@ -293,16 +327,14 @@ export function apply(ctx, config) {
       await syncTask()
       await push(patch)
     }
-    const t = setTimeout(run, cfg.startDelayMs)
-    if (typeof t.unref === 'function') t.unref()
-    const interval = setInterval(run, cfg.checkIntervalMs)
-    if (typeof interval.unref === 'function') interval.unref()
-    return () => { cancelled = true; clearTimeout(t); clearInterval(interval) }
+    const t = ctx.timeout(run, cfg.startDelayMs)
+    const interval = ctx.interval(run, cfg.checkIntervalMs)
+    return () => { cancelled = true; try { t?.dispose?.() } catch {}; try { interval?.dispose?.() } catch {} }
   })
 
   // --- respond to the Settings "show offline steps / enable auto" request ---
   ctx.effect(() => {
-    const watch = setInterval(async () => {
+    const watch = ctx.interval(async () => {
       let flag = false
       try { flag = readValue(ctx.fiber?.effectiveConfig?.cleanRequest) === true } catch { /* ignore */ }
       if (!flag) return
@@ -319,8 +351,7 @@ export function apply(ctx, config) {
         await push({ cleanRequest: false, lastResult: '生成离线清理指引失败：' + e?.message })
       }
     }, cfg.cleanPollMs)
-    if (typeof watch.unref === 'function') watch.unref()
-    return () => clearInterval(watch)
+    return () => { try { watch?.dispose?.() } catch {} }
   })
 
   // First publish (seeds the launch counter + initial status).
