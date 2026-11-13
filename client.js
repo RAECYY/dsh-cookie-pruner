@@ -1,5 +1,5 @@
 /**
- * dsh-cookie-pruner — browser (client) half, v0.1.7
+ * dsh-cookie-pruner — browser (client) half, v0.1.11
  *
  * Contributes a real "Cookie 清理" section to the DSH Settings dialog — the
  * panel opened from the bottom-left account avatar → 设置. This is the place

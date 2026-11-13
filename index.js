@@ -1,5 +1,5 @@
 /**
- * dsh-cookie-pruner — Host half, v0.1.10
+ * dsh-cookie-pruner — Host half, v0.1.11
  *
  * Mitigates the DSH desktop bug where `dsh-auth-*` cookies accumulate one per
  * launch (each desktop host uses a new random port, so the cookie name differs
@@ -84,6 +84,19 @@ try {
   console.warn('[dsh-cookie-pruner] schemastery unavailable — Settings form disabled:', e1?.message)
 }
 
+// node:fs is reachable in the host sandbox (the same `node:module` we just
+// required loads fine). File METADATA (the inode size) is readable even while
+// the Cookies DB content is range-locked by Chromium — so fs.statSync gives us
+// the pile-up signal without spawning a subprocess every minute. We load it
+// defensively and fall back to the PowerShell gauge if it is ever missing.
+let fsStatSync = null
+try {
+  const fsMod = createRequire(import.meta.url)('node:fs')
+  if (fsMod && typeof fsMod.statSync === 'function') fsStatSync = fsMod.statSync.bind(fsMod)
+} catch (e2) {
+  console.warn('[dsh-cookie-pruner] node:fs unavailable — using subprocess gauge:', e2?.message)
+}
+
 /**
  * Volatile fields are live-editable from the DSH Settings page without
  * remounting the plugin. dsh-settings auto-renders a form for any plugin whose
@@ -145,8 +158,12 @@ async function resolveAppData(sub) {
   for (const expr of ['$env:APPDATA', '$env:LOCALAPPDATA']) {
     try {
       const handle = sub.spawn({ argv: ['powershell', '-NoProfile', '-Command', expr] })
-      const res = await handle.done
-      const p = String((res && res.stdout) || '').trim().replace(/[\\/]$/, '')
+      const chunks = []
+      if (handle.stdout && typeof handle.stdout.on === 'function') {
+        for await (const c of handle.stdout) chunks.push(c)
+      }
+      await handle.done
+      const p = Buffer.concat(chunks).toString('utf8').trim().replace(/[\\/]$/, '')
       if (p && /AppData/.test(p)) { cachedAppData = p; break }
     } catch { /* try next */ }
   }
@@ -168,22 +185,38 @@ function formatKB(bytes) {
 }
 
 /**
- * Measure the Cookies DB file size via a spawned subprocess. The DB content is
- * locked while DSH runs, but the FILE METADATA (its size) is readable — even a
- * plain `fs.stat` works (verified: returns 20480 while cp→EBUSY). We use a
- * subprocess so we don't depend on the internal `ctx.fs` target-key shape, and
- * because reading size is the only signal we need.
+ * Measure the Cookies DB file size. The DB content is locked while DSH runs,
+ * but the FILE METADATA (its size) is readable — `fs.statSync` returns the
+ * inode size (verified: 28672 while cp→EBUSY). Preferred path is therefore a
+ * plain `fs.statSync`; the PowerShell subprocess gauge below is only a
+ * fallback if `node:fs` is somehow unavailable.
  */
 async function readDbSize(sub) {
   const p = await cookiesPath(sub)
-  if (!p || !sub) return 0
+  if (!p) return 0
+  // PREFERRED: file metadata is readable even while the DB content is locked.
+  if (fsStatSync) {
+    try {
+      return fsStatSync(p).size
+    } catch {
+      // fall through to the subprocess gauge if stat fails
+    }
+  }
+  // FALLBACK: measure via a spawned PowerShell. NOTE the real subprocess handle
+  // exposes the stream on `handle.stdout` — `handle.done` resolves ONLY to
+  // {exitCode, signal} (no stdout), so we must read the stream, not handle.done.
+  if (!sub) return 0
   try {
     const quoted = p.replace(/'/g, "''")
     const handle = sub.spawn({
       argv: ['powershell', '-NoProfile', '-Command', `(Get-Item -LiteralPath '${quoted}').Length`],
     })
-    const res = await handle.done
-    const n = parseInt(String((res && res.stdout) || '').trim(), 10)
+    const chunks = []
+    if (handle.stdout && typeof handle.stdout.on === 'function') {
+      for await (const c of handle.stdout) chunks.push(c)
+    }
+    await handle.done
+    const n = parseInt(Buffer.concat(chunks).toString('utf8').trim(), 10)
     return Number.isFinite(n) && n >= 0 ? n : 0
   } catch (e) {
     console.warn('[dsh-cookie-pruner] gauge error:', e?.message)

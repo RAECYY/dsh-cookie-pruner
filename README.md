@@ -1,6 +1,6 @@
-# dsh-cookie-pruner v0.1.10
+# dsh-cookie-pruner v0.1.11
 
-![version](https://img.shields.io/badge/version-v0.1.10-blue) ![license](https://img.shields.io/badge/license-MIT-green) ![platform](https://img.shields.io/badge/platform-DSH%20desktop-orange)
+![version](https://img.shields.io/badge/version-v0.1.11-blue) ![license](https://img.shields.io/badge/license-MIT-green) ![platform](https://img.shields.io/badge/platform-DSH%20desktop-orange)
 
 ---
 
@@ -115,6 +115,10 @@
 > 1. **`process` is `undefined` in the sandbox.** v0.1.9's `cookiesPath()` read `process.env.APPDATA || process.env.LOCALAPPDATA`, which threw `ReferenceError` → empty path → DB size always measured as 0, risk badge always green. v0.1.10 resolves `APPDATA` via a subprocess probe (`$env:APPDATA` — the same channel used to read the DB size) and never touches `process`.
 > 2. **Bare `setTimeout` / `setInterval` are trapped by the sandbox.** `hostrunner`'s `NODE_API_REDIRECTS` maps bare timers to a thrown `TIMER_REDIRECT`, and the host façade only permits `ctx.timeout` / `ctx.interval` after the plugin declares `inject: ['timer']`. v0.1.9's bare timers threw inside the effect bodies, so the "measure loop" and "clean-request poll" never actually ran — only the synchronous first publish landed. v0.1.10 uses `ctx.timeout` / `ctx.interval` and adds `export const inject = ['timer']`; timer handles are `dispose()`'d in the `ctx.effect` cleanup.
 > A sandbox-simulating host test confirms v0.1.10 reads the real `20480` bytes (not 0), registers 3 timers, and correctly flips the risk badge red + registers the scheduled task. Takes effect after a full DSH restart.
+
+> **中文（v0.1.10 → v0.1.11 的更正，第三处沙箱坑）：** v0.1.10 装上去后，计划任务、计时器都对，但面板**仍然显示 `0 KB` / `安全`**。根因在子进程句柄的返回形态，已对照 `dsh-subprocess-local` 源码确认：Windows 路径里 `sub.spawn(...)` 返回的句柄，`handle.done` **只解析成 `{ exitCode, signal }`——根本不带 `.stdout`**；真正的输出流在 `handle.stdout`（一个可读流）上。v0.1.10 的 `readDbSize` / `resolveAppData` 写了 `const res = await handle.done; const n = parseInt(res.stdout)` → `res.stdout` 是 `undefined` → 测出来恒为 0。v0.1.11 **改用 `fs.statSync` 直接读文件大小**（沙箱内 `node:fs` 可达，文件元数据可读，实测 `cp`→EBUSY 但 `statSync` 仍返回 `28672` 字节；子进程 gauges 仅在 `node:fs` 缺失时兜底），并且把子进程兜底通道也改成从 `handle.stdout` 流读取，不再依赖 `handle.done.stdout`。现在面板能显示真实的库大小（你的机器约 28 KB，远超 8 KiB 阈值），徽章正确变红并自动登记计划任务。实测文件大小：28672 字节（28 KB）。
+
+> **English (v0.1.10 → v0.1.11 correction — third sandbox pitfall):** v0.1.10 had the scheduled task + timers right, but the panel **still showed `0 KB` / "safe"**. The root cause is in the subprocess handle's return shape, confirmed against `dsh-subprocess-local` source: on the Windows path, `sub.spawn(...)`'s returned handle has `handle.done` resolve to **ONLY `{ exitCode, signal }` — it does NOT carry `.stdout`**; the real output stream lives on `handle.stdout` (a readable stream). v0.1.10's `readDbSize`/`resolveAppData` did `const res = await handle.done; const n = parseInt(res.stdout)` → `res.stdout` was `undefined` → measured size was always 0. v0.1.11 instead **reads the file size directly via `fs.statSync`** (the sandbox can reach `node:fs`; file metadata is readable, and while `cp`→EBUSY, `statSync` still returns `28672` bytes; the subprocess gauge is only a fallback if `node:fs` is missing), and the subprocess fallback channel now reads from the `handle.stdout` stream rather than `handle.done.stdout`. The panel now shows the real DB size (your machine ~28 KB, far above the 8 KiB threshold), the badge flips red correctly, and the scheduled task is registered automatically. Measured size: 28672 bytes (28 KB).
 
 ## 可调参数 / Configurable parameters (edit `DEFAULT_CONFIG` / the constants at the top of `index.js`)
 
