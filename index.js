@@ -163,23 +163,11 @@ export function apply(ctx, config) {
     // Immediate first measurement (after apply returns, outside any transaction).
     Promise.resolve().then(() => { try { run() } catch (e) { diag({ fatal: e?.message || String(e) }) } })
 
-    // Optional periodic refresh via the built-in CTX_VERB `effect` + `timer`.
-    // We never DECLARE timer, so a missing timer only means "no periodic
-    // refresh" — the assistant can still read the diag file on demand.
-    const timer = ctx.timer || null
-    if (timer && typeof timer.interval === 'function') {
-      diag({ timer: 'available' })
-      try {
-        ctx.effect(() => {
-          const iv = timer.interval(() => { try { run() } catch (e) { diag({ fatal: e?.message || String(e) }) } }, 60000)
-          return () => { try { iv?.dispose?.() } catch {} }
-        })
-      } catch (e) {
-        diag({ timerError: e?.message || String(e) })
-      }
-    } else {
-      diag({ timer: 'NOT available — assistant reads diag on demand' })
-    }
+    // No periodic refresh: host halves are NOT granted `timer`, and the sandbox
+    // proxy throws on ANY access to an undeclared service (even `ctx.timer || null`)
+    // — so we must not touch `ctx.timer` at all. The assistant reads the diag
+    // file on demand instead, which is reliable and avoids the trap.
+    diag({ timer: 'NOT available — assistant reads diag on demand' })
 
     diag({ activated: true, hasConfig: !!Config, schemErr: schemErr || undefined, launchThreshold: LAUNCH_THRESHOLD, riskSize: RISK_SIZE })
   } catch (e) {
