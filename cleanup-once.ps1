@@ -10,15 +10,11 @@
         脚本也会在检测到占用（进程仍在、文件被锁）时给出明确报错并退出，
         不会破坏任何文件。
 
-  自动清理说明（v0.1.7）：dsh-cookie-pruner 插件检测到 cookie 堆积时，会登记一个
-        Windows 计划任务（DshCookiePrune），它只在你完全退出 DSH 后、且文件不再被
-        占用时运行本脚本，因此不会在 DSH 运行时误删。
-
   参数：
     -WhatIf   只显示将要执行的操作，不真正重命名（用于自查）。
 
   作用：把 Chromium 的 Cookies 库重命名为 .bak-<时间戳>，DSH 下次启动会重建一个干净的库。
-        旧文件保留为备份，便于极端情况下还原。不会删除任何 asar 或程序文件。
+        旧文件保留为备份，便于极端情况下还原。不会删除任何程序文件。
 #>
 
 [CmdletBinding(SupportsShouldProcess = $true)]
@@ -28,7 +24,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-# DSH 桌面端 Chromium 用户数据目录（与视频里“退出应用”后清理一致）
+# DSH 桌面端 Chromium 用户数据目录
 $networkDir = "$env:APPDATA\@deepseek-ai\dsh-desktop\Network"
 $cookies = Join-Path $networkDir 'Cookies'
 $journal = Join-Path $networkDir 'Cookies-journal'

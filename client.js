@@ -1,23 +1,16 @@
 /**
- * dsh-cookie-pruner — browser (client) half, v0.1.14
+ * dsh-cookie-pruner — browser (client) half, v0.2.0
  *
- * Contributes an HONEST "Cookie 清理" section to the DSH Settings dialog — the
- * panel opened from the bottom-left account avatar → 设置 (the place the user
- * asked for, not the left Plugins sidebar, not a web dashboard).
+ * Registers the "Cookie 清理" section in the DSH Settings dialog (bottom-left
+ * account avatar → 设置). The panel explains the mechanism and the one-time
+ * offline cleanup steps.
  *
- * HONESTY NOTE (verified against the shipped 44.7.0 asar + real restart logs):
- *  - The host half runs in a locked-down `node:vm` sandbox. It has `node:fs`
- *    (so it CAN measure the Cookies DB size) but it does NOT get `settings` /
- *    `bash` / `subprocess` / `config` / `fiber`. There is no supported channel
- *    for the host to push live numbers into this panel at runtime.
- *  - Therefore this panel does NOT pretend to show live DB-size numbers it can't
- *    receive. Instead it explains the real situation and gives the offline steps
- *    that ACTUALLY fix 431. The live measurement lives in the host's
- *    `.runtime-diag.json`, which the assistant (the agent driving this plugin)
- *    reads and reports to you in chat.
- *  - The genuine mitigation is OUTSIDE the plugin: the profile's
- *    `connection.cookieMaxAgeDays: 7` (Layer A) caps future pile-up, and
- *    `cleanup-once.ps1` clears the existing DB once DSH is fully quit.
+ * The host half measures the Cookies DB size into .runtime-diag.json, which the
+ * assistant reads and reports in chat; the plugin sandbox has no channel to push
+ * live numbers into this panel, so the panel shows static guidance instead.
+ * Prevention comes from connection.cookieMaxAgeDays: 3 in the profile, which
+ * caps new auth cookies at 3 days; cleanup-once.ps1 clears existing accumulation
+ * once DSH is fully quit.
  */
 
 window.__ModuleLoader__.load({
@@ -75,13 +68,13 @@ window.__ModuleLoader__.load({
           h('span', { style: label }, '① 预防（已自动生效）'),
           h('span', { style: { ...value, color: T.success } }, 'Layer A')),
         h('div', { style: { color: T.secondary, fontSize: 12, margin: '4px 0 12px' } },
-          '你的 profile 里 connection.cookieMaxAgeDays: 7 已把未来 cookie 寿命压到 7 天，旧 cookie 会自行过期，不再无限堆积。'),
+          '你的 profile 里 connection.cookieMaxAgeDays: 3 已把未来 cookie 寿命压到 3 天，旧 cookie 会自行过期，不再无限堆积。'),
 
         h('div', { style: row },
           h('span', { style: label }, '② 清理当前堆积（一次性）'),
           h('span', { style: { ...value, color: T.warning } }, '需手动')),
         h('div', { style: { color: T.secondary, fontSize: 12, margin: '4px 0 12px' } },
-          '当前 Cookies 库已有堆积（约 28 KB），必须完全退出 DSH 后运行一次离线脚本：'),
+          '当前 Cookies 库若已有堆积，必须完全退出 DSH 后运行一次离线脚本：'),
 
         h('div', { style: block },
           '1. 完全退出 DSH（右键托盘 → 退出，确认进程结束）。\n' +
@@ -91,7 +84,7 @@ window.__ModuleLoader__.load({
           '3. 重新打开 DSH 即可，431 解除。'),
 
         h('div', { style: { color: T.tertiary, fontSize: 11, marginTop: 18 } },
-          'dsh-cookie-pruner v0.1.14 · 诚实版：插件沙箱无法运行时删 cookie，已说明真实情况与离线修复步骤。'),
+          'dsh-cookie-pruner v0.2.0 · 认证 Cookie 清理（3 天过期 + 离线脚本）。'),
       )
     }
 
