@@ -1,5 +1,5 @@
 /**
- * dsh-cookie-pruner — browser (client) half, v0.1.11
+ * dsh-cookie-pruner — browser (client) half, v0.1.12
  *
  * Contributes a real "Cookie 清理" section to the DSH Settings dialog — the
  * panel opened from the bottom-left account avatar → 设置. This is the place
@@ -179,7 +179,7 @@ window.__ModuleLoader__.load({
           : null,
 
         h('div', { style: { color: T.tertiary, fontSize: 11, marginTop: 20 } },
-          'dsh-cookie-pruner v0.1.11 · 自动检测 + 退出后自动清理 · Layer A（cookieMaxAgeDays:7）防止未来堆积。'),
+          'dsh-cookie-pruner v0.1.12 · 自动检测 + 退出后自动清理 · Layer A（cookieMaxAgeDays:7）防止未来堆积。'),
       )
     }
 

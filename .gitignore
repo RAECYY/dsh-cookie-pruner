@@ -4,5 +4,7 @@ node_modules/
 *.bak
 .idea/
 .vscode/
+.runtime-diag.json
+
 
 CON

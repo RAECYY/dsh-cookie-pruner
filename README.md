@@ -1,6 +1,6 @@
-# dsh-cookie-pruner v0.1.11
+# dsh-cookie-pruner v0.1.12
 
-![version](https://img.shields.io/badge/version-v0.1.11-blue) ![license](https://img.shields.io/badge/license-MIT-green) ![platform](https://img.shields.io/badge/platform-DSH%20desktop-orange)
+![version](https://img.shields.io/badge/version-v0.1.12-blue) ![license](https://img.shields.io/badge/license-MIT-green) ![platform](https://img.shields.io/badge/platform-DSH%20desktop-orange)
 
 ---
 
@@ -148,3 +148,11 @@
 ## License / 许可证
 
 **MIT** — see [LICENSE](./LICENSE).
+
+## 版本历史 / Changelog（关键修正）
+
+- **v0.1.12（本版）— 结构性根因修复：** 之前的 v0.1.7–v0.1.11 在「退出重进后还是没用」的根因是 Host 沙箱的 `require` 桥：沙箱里 `import.meta.url` 通常为 `undefined`，导致 `createRequire(import.meta.url)` 抛错，进而 `Config`（Settings 表单 schema）解析为 `undefined`、node:fs 也取不到 —— 面板要么不渲染、要么永远显示 0 KB。本版改用**硬编码插件基路径**调用 `createRequire`（`createRequire('D:/AI/dsh-cookie-pruner/package.json')`），并把 `node:fs` 改为**顶层静态 import**（由宿主 linker 在 vm-wrap 之前解析，绕过 `require` 陷阱），用 `statSync` 直接读文件大小元数据（库内容被锁也能读到大小）。同时**移除 `export const inject = ['timer']`**（宿主若未提供该服务会导致插件整体激活失败、面板消失），改为可选的 `ctx.get('timer')`；首次测量在加载时**立即同步执行**，不依赖定时器；并把环境探针写入 `.runtime-diag.json`，无需截图即可定位问题。
+- **v0.1.11：** 修正 `handle.done` 不含 `.stdout` 的 bug（改用 node:fs 直接读大小）。
+- **v0.1.10：** 修复沙箱两处硬限制（`process` 在 vm 沙箱为 undefined；裸 `setTimeout`/`setInterval` 被拦截 → 须用 `inject:['timer']` + `ctx.timeout`/`ctx.interval`）。
+- **v0.1.9：** 修复真正的回归 —— `push()` 直接读 `ctx.settings`（vm 沙箱里为 undefined）导致 Host 半边从未发布数据；改为 `ctx.get('settings')`。
+- **v0.1.6：** 诚实版面板 + 离线清理脚本 `cleanup-once.ps1`。
