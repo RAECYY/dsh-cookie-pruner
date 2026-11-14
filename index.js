@@ -1,5 +1,5 @@
 /**
- * dsh-cookie-pruner — Host half, v0.1.12
+ * dsh-cookie-pruner — Host half, v0.1.13
  *
  * ROOT-CAUSE NOTE (why v0.1.7–v0.1.11 were "still useless"):
  *   - Those versions declared `export const inject = ['timer']`. If the desktop
@@ -17,6 +17,17 @@
  *     we load @deepseek-ai/schemastery via createRequire (works here; the
  *     dependency is installed).
  *
+ *   - v0.1.12 "still useless" root cause: it used `ctx.get('settings')` (an
+ *     OPTIONAL lookup). The sandbox façade only hands a service to the host half
+ *     via PROPERTY access (`ctx.settings`) when that service is declared in
+ *     `inject`; the optional `ctx.get` returned undefined, so `push()` was a
+ *     no-op (`pushCount: 0`) and the panel never got data. FIX: declare the
+ *     services we need in `inject` (optional form, so a missing provider never
+ *     parks the plugin) and access them via `ctx.settings` / `ctx.bash`.
+ *
+ *   - The first `settings.update` must run AFTER `apply` returns (a microtask),
+ *     otherwise the runtime rejects it with "HMR transactions cannot be nested".
+ *
  * A runtime diagnostic is written to .runtime-diag.json so failures are visible
  * WITHOUT a screenshot or console.
  */
@@ -26,8 +37,13 @@ import { writeFileSync, readFileSync, existsSync, statSync } from 'node:fs'
 
 export const name = 'dsh-cookie-pruner'
 
-// NOTE: deliberately NO `inject: ['timer']`. Declaring a required service the
-// host half may not provide would block plugin activation entirely (no panel).
+// Declare the services the host half needs. The sandbox façade only exposes a
+// service via `ctx.<name>` property access when it is listed here; the optional
+// form means a provider that is absent does NOT park the plugin (the panel still
+// renders via the client half). `settings` is what publishes live data to the
+// panel; `timer` drives periodic refresh; `bash`/`subprocess` schedule the
+// deferred offline cleanup via Windows Task Scheduler.
+export const inject = { optional: ['settings', 'timer', 'bash', 'subprocess'] }
 
 const COOKIE_PREFIX = 'dsh-auth-'
 
@@ -51,6 +67,9 @@ const GAUGE_MS = 60000          // (only used if a timer service is present)
 const CLEAN_POLL_MS = 3000      // (only used if a timer service is present)
 const TASK_INTERVAL_MIN = 10    // the scheduled job runs at most every 10 min
 const FALLBACK_APPDATA = 'C:/Users/ASUS/AppData/Roaming'
+// Subprocess spawn specs require a graceMs (TERM-to-KILL / exit-wait grace). The
+// validator rejects the call without it, so we always attach one.
+const GRACE_MS = 30000
 
 const DEFAULT_CONFIG = {
   cookieMaxAgeDays: 7,   // mirrors Layer A; preventive only
@@ -114,7 +133,7 @@ function resolveConfig(raw) {
 
 // --- runtime diagnostic ---
 let diagData = {
-  version: '0.1.12',
+  version: '0.1.13',
   hasSchemastery: !!z,
   hasConfig: !!Config,
   schemErr: schemErr || undefined,
@@ -135,7 +154,7 @@ async function resolveAppData(proc) {
   if (!proc) return ''
   for (const expr of ['$env:APPDATA', '$env:LOCALAPPDATA']) {
     try {
-      const handle = proc.spawn({ argv: ['powershell', '-NoProfile', '-Command', expr] })
+      const handle = proc.spawn({ argv: ['powershell', '-NoProfile', '-Command', expr], graceMs: GRACE_MS })
       const chunks = []
       if (handle.stdout && typeof handle.stdout.on === 'function') {
         for await (const c of handle.stdout) chunks.push(c)
@@ -184,7 +203,7 @@ async function readDbSize(proc) {
   // Fallback: subprocess powershell (Get-Item .Length) reading handle.stdout.
   if (!proc) { diag({ gaugeMethod: 'no proc, no fs' }); return 0 }
   try {
-    const handle = proc.spawn({ argv: ['powershell', '-NoProfile', '-Command', `(Get-Item -LiteralPath '${p.replace(/'/g, "''")}').Length`] })
+    const handle = proc.spawn({ argv: ['powershell', '-NoProfile', '-Command', `(Get-Item -LiteralPath '${p.replace(/'/g, "''")}').Length`], graceMs: GRACE_MS })
     const chunks = []
     if (handle.stdout && typeof handle.stdout.on === 'function') {
       for await (const c of handle.stdout) chunks.push(c)
@@ -206,6 +225,7 @@ async function ensureScheduledTask(proc) {
       argv: ['schtasks', '/create', '/tn', TASK_NAME,
         '/tr', `powershell -ExecutionPolicy Bypass -File "${CLEANUP_SCRIPT}"`,
         '/sc', 'minute', '/mo', String(TASK_INTERVAL_MIN), '/f'],
+      graceMs: GRACE_MS,
     })
     await handle.done
     diag({ task: 'created' })
@@ -219,7 +239,7 @@ async function ensureScheduledTask(proc) {
 async function removeScheduledTask(proc) {
   if (!proc) return
   try {
-    const h = proc.spawn({ argv: ['schtasks', '/delete', '/tn', TASK_NAME, '/f'] })
+    const h = proc.spawn({ argv: ['schtasks', '/delete', '/tn', TASK_NAME, '/f'], graceMs: GRACE_MS })
     await h.done
   } catch {}
 }
@@ -260,9 +280,12 @@ export function apply(ctx, config) {
     } catch {}
     if (published.autoCleanEnabled !== true && published.autoCleanEnabled !== false) published.autoCleanEnabled = true
 
-    const settings = ctx.get ? ctx.get('settings') : (ctx.settings || undefined)
-    const sub = ctx.get ? ctx.get('subprocess') : (ctx.subprocess || null)
-    const bash = ctx.get ? ctx.get('bash') : null
+    // Declared services are reached via PROPERTY access (the façade only hands a
+    // service to the host half through ctx.<name> when it is in `inject`). The
+    // optional form means any missing provider is simply undefined here.
+    const settings = ctx.settings || null
+    const sub = ctx.subprocess || null
+    const bash = ctx.bash || null
     const proc = sub || bash
     diag({ hasSettings: !!settings, hasSubprocess: !!sub, hasBash: !!bash, ns: NS })
 
@@ -315,12 +338,14 @@ export function apply(ctx, config) {
     }
 
     // IMMEDIATE first reading — no timer dependency, so data shows right away
-    // even if the timer service is unavailable.
-    run().catch(() => {})
+    // even if the timer service is unavailable. It runs AFTER this function
+    // returns (microtask), so the first `settings.update` is outside the HMR
+    // activation transaction (avoids "HMR transactions cannot be nested").
+    Promise.resolve().then(() => run().catch(() => {}))
 
     // Optional periodic refresh + clean-request poll, only if a timer service
     // is available.
-    const timer = ctx.get ? ctx.get('timer') : null
+    const timer = ctx.timer || null
     if (timer && typeof timer.interval === 'function') {
       diag({ timer: 'available' })
       ctx.effect(() => {
@@ -352,8 +377,8 @@ export function apply(ctx, config) {
       diag({ timer: 'NOT available — using immediate + client-triggered refresh only' })
     }
 
-    // Seed the launch counter now.
-    push({ launchesSincePrune: published.launchesSincePrune }).catch(() => {})
+    // Seed the launch counter now (deferred past activation).
+    Promise.resolve().then(() => push({ launchesSincePrune: published.launchesSincePrune }).catch(() => {}))
   } catch (e) {
     diag({ fatal: e?.message || String(e), stack: e?.stack })
   }
