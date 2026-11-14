@@ -67,12 +67,18 @@ if (typeof lastDbSize !== 'number' || lastDbSize <= 0) { console.error('FAIL: la
 // no graceMs-less spawn should have been attempted; ensure graceMs present on all spawns
 for (const s of spawns) { if (!s.graceMs) { console.error('FAIL: spawn missing graceMs', s.argv); ok = false } }
 
-// read diag file if written
+// NOTE: do NOT read/write the real .runtime-diag.json — that file is owned by the
+// real DSH host. Write harness output to a separate file so we never contaminate
+// the ground-truth diagnostic.
+const HARNESS_DIAG = 'D:/AI/dsh-cookie-pruner/.runtime-diag.harness.json'
 try {
-  const diag = JSON.parse(readFileSync('D:/AI/dsh-cookie-pruner/.runtime-diag.json', 'utf8'))
-  console.log('diag version:', diag.version, '| hasSettings:', diag.hasSettings, '| pushCount:', diag.pushCount, '| gaugeBytes:', diag.gaugeBytes)
-  if (diag.hasSettings !== true) { console.error('FAIL: diag says settings not present'); ok = false }
-} catch (e) { console.error('note: diag not readable', e.message) }
+  writeFileSync(HARNESS_DIAG, JSON.stringify({
+    harness: 'v0.1.13', pushCount: updates.length, lastDbSize,
+    launchesSincePrune: launches, spawns: spawns.map((s) => s.argv[0]),
+    intervals: intervals.length,
+  }, null, 2))
+  console.log('harness diag written to', HARNESS_DIAG, '(NOT the real .runtime-diag.json)')
+} catch (e) { console.error('note: could not write harness diag', e.message) }
 
 console.log(ok ? '\nHOST HARNESS: PASS' : '\nHOST HARNESS: FAIL')
 process.exit(ok ? 0 : 1)
